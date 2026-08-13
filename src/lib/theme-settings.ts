@@ -10,7 +10,7 @@ export interface ThemeSettings {
 
 const STORAGE_DIR = path.join(process.cwd(), "storage", "system");
 const SETTINGS_FILE = path.join(STORAGE_DIR, "theme-settings.json");
-const THEME_MEDIA_DIR = path.join(STORAGE_DIR, "theme-media");
+const THEME_MEDIA_DIR = path.join(process.cwd(), "public", "theme-media");
 
 export const defaultThemeSettings: ThemeSettings = {
   preset: "aurora-digital",
@@ -67,10 +67,5 @@ export function saveThemeMedia(fileName: string, buffer: Buffer) {
   }
 
   fs.writeFileSync(targetPath, buffer);
-  return `/api/public/theme-media/${targetName}`;
-}
-
-export function getThemeMediaPath(fileName: string) {
-  ensureThemeStorage();
-  return path.join(THEME_MEDIA_DIR, fileName);
+  return `/theme-media/${targetName}`;
 }

@@ -218,24 +218,6 @@ function getRuntimeDirectory(serverId: string) {
   return runtimeDir;
 }
 
-function prepareRuntimeContainerAlias(serverId: string, targetDirectory: string) {
-  const runtimeDir = getRuntimeDirectory(serverId);
-  const aliasPath = path.join(runtimeDir, "container-root");
-
-  try {
-    if (fs.existsSync(aliasPath) || fs.lstatSync(aliasPath)) {
-      fs.rmSync(aliasPath, { recursive: true, force: true });
-    }
-  } catch {}
-
-  try {
-    fs.symlinkSync(targetDirectory, aliasPath, "dir");
-    return aliasPath;
-  } catch {
-    return targetDirectory;
-  }
-}
-
 export function getServerConsolePaths(serverId: string) {
   const runtimeDir = getRuntimeDirectory(serverId);
   return {
@@ -475,7 +457,6 @@ export async function startServer(serverId: string): Promise<boolean> {
   const serverRoot = getServerDirectory(serverId);
   initializeServerFiles(serverId, templateCategory);
   const runtimeWorkingDirectory = resolveRuntimeWorkingDirectory(serverRoot, server.workingDirectory);
-  const runtimeContainerAlias = prepareRuntimeContainerAlias(serverId, runtimeWorkingDirectory);
 
   const runtimeEnv: NodeJS.ProcessEnv = {
     ...process.env,
@@ -496,7 +477,7 @@ export async function startServer(serverId: string): Promise<boolean> {
 
   const finalStartupCommand = normalizeStartupCommand(
     server.startupCommand,
-    runtimeContainerAlias,
+    runtimeWorkingDirectory,
     runtimeEnv.NODE_RUNTIME_VERSION
   );
 
@@ -504,7 +485,7 @@ export async function startServer(serverId: string): Promise<boolean> {
   fs.writeFileSync(inputLogPath, "", "utf-8");
   fs.appendFileSync(
     outputLogPath,
-    `\n[Birdserver] ===== START ${new Date().toISOString()} =====\n[Birdserver] Server Root: ${serverRoot}\n[Birdserver] Working Dir: ${runtimeWorkingDirectory}\n[Birdserver] Container Alias: ${runtimeContainerAlias}\n[Birdserver] Startup Command: ${server.startupCommand}\n[Birdserver] Resolved Startup: ${finalStartupCommand}\n[Birdserver] MAIN_FILE=${runtimeEnv.MAIN_FILE}\n[Birdserver] NODE_BIN=${hostBinaries.node}\n[Birdserver] NPM_BIN=${hostBinaries.npm}\n[Birdserver] NPX_BIN=${hostBinaries.npx}\n[Birdserver] PATH=${runtimeEnv.PATH}\n`,
+    `\n[Birdserver] ===== START ${new Date().toISOString()} =====\n[Birdserver] Server Root: ${serverRoot}\n[Birdserver] Working Dir: ${runtimeWorkingDirectory}\n[Birdserver] Startup Command: ${server.startupCommand}\n[Birdserver] Resolved Startup: ${finalStartupCommand}\n[Birdserver] MAIN_FILE=${runtimeEnv.MAIN_FILE}\n[Birdserver] NODE_BIN=${hostBinaries.node}\n[Birdserver] NPM_BIN=${hostBinaries.npm}\n[Birdserver] NPX_BIN=${hostBinaries.npx}\n[Birdserver] PATH=${runtimeEnv.PATH}\n`,
     "utf-8"
   );
 
