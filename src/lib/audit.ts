@@ -23,10 +23,6 @@ export async function createAuditLog(
     const columns = new Set(columnsResult.rows.map((row) => row.column_name));
     const idType = columnsResult.rows.find((row) => row.column_name === "id")?.data_type || "text";
 
-    const createdAtField = columns.has("created_at") ? "created_at" : columns.has("createdAt") ? '"createdAt"' : null;
-    const userIdField = columns.has("user_id") ? "user_id" : columns.has("userId") ? '"userId"' : null;
-    const detailsField = columns.has("details") ? "details" : columns.has("metadata") ? "metadata" : null;
-
     const fieldNames: string[] = [];
     const placeholders: string[] = [];
     const values: unknown[] = [];
@@ -41,11 +37,26 @@ export async function createAuditLog(
       push("id", "log_" + cryptoRandomString(12));
     }
 
-    if (userIdField) push(userIdField, userId || null);
+    if (columns.has("user_id")) push("user_id", userId || null);
+    if (columns.has("userId")) push('"userId"', userId || "system");
+
     push("action", action);
-    if (detailsField) push(detailsField, JSON.stringify(sanitizedDetails));
+
+    if (columns.has("details")) push("details", JSON.stringify(sanitizedDetails));
+    if (columns.has("metadata")) push("metadata", JSON.stringify(sanitizedDetails));
+
     if (columns.has("ip_address")) push("ip_address", ipAddress || "127.0.0.1");
-    if (createdAtField) push(createdAtField, new Date());
+    if (columns.has("target")) push("target", null);
+    if (columns.has("resource")) push("resource", null);
+    if (columns.has("resource_id")) push("resource_id", null);
+    if (columns.has("endpoint")) push("endpoint", null);
+    if (columns.has("method")) push("method", null);
+    if (columns.has("status_code")) push("status_code", null);
+    if (columns.has("api_key_id")) push("api_key_id", null);
+    if (columns.has("user_agent")) push("user_agent", null);
+
+    if (columns.has("created_at")) push("created_at", new Date());
+    if (columns.has("createdAt")) push('"createdAt"', new Date());
 
     await pool.query(
       `insert into audit_logs (${fieldNames.join(", ")}) values (${placeholders.join(", ")})`,

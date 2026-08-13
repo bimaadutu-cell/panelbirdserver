@@ -4,6 +4,7 @@ import { db } from "@/db";
 import { nodes } from "@/db/schema";
 import { cryptoRandomString } from "@/lib/utils";
 import { createAuditLog } from "@/lib/audit";
+import { ensureSeedData } from "@/lib/seed";
 
 async function getAuthSession(req: Request) {
   const authHeader = req.headers.get("authorization");
@@ -16,6 +17,7 @@ async function getAuthSession(req: Request) {
 
 export async function GET(req: Request) {
   try {
+    await ensureSeedData();
     const session = await getAuthSession(req);
     if (!session || session.role !== "admin") {
       return NextResponse.json(
@@ -37,6 +39,7 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    await ensureSeedData();
     const session = await getAuthSession(req);
     if (!session || session.role !== "admin") {
       return NextResponse.json(
