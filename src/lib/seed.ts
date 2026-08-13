@@ -3,12 +3,10 @@ import { users, resellers, nodes, allocations, templates, packages, servers } fr
 import { hashPassword } from "@/lib/auth";
 import { generateServerIdentifier } from "@/lib/utils";
 import { initializeServerFiles, DEFAULT_NODE_STARTUP_COMMAND, getDefaultServerEnv } from "@/lib/agent/engine";
-import { ensureDatabaseReady } from "@/db/bootstrap";
 import { eq } from "drizzle-orm";
 
 export async function ensureSeedData() {
   try {
-    await ensureDatabaseReady();
     const existingUsers = await db.select().from(users);
     if (existingUsers.length > 0) {
       return; // Already seeded

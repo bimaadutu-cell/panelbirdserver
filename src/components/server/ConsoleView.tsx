@@ -74,38 +74,37 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
       filteredLogs.push(line);
     }
 
-    let currentGroup: { start: number; end: number; lines: string[] } | null = null;
-    let bestGroup: { start: number; end: number; lines: string[] } | null = null;
+    let currentGroup: { start: number; lines: string[] } | null = null;
+    let bestGroup: string[] = [];
 
     filteredLogs.forEach((line, index) => {
       if (isQrAsciiLine(line)) {
-        if (!currentGroup) currentGroup = { start: index, end: index, lines: [] };
+        if (!currentGroup) currentGroup = { start: index, lines: [] };
         currentGroup.lines.push(line);
-        currentGroup.end = index;
       } else if (currentGroup) {
         if (currentGroup.lines.length >= 10) {
-          bestGroup = currentGroup;
+          bestGroup = currentGroup.lines;
         }
         currentGroup = null;
       }
     });
 
-    const trailingGroup = currentGroup as { start: number; end: number; lines: string[] } | null;
+    const trailingGroup = currentGroup as { start: number; lines: string[] } | null;
     if (trailingGroup && trailingGroup.lines.length >= 10) {
-      bestGroup = trailingGroup;
+      bestGroup = trailingGroup.lines;
     }
 
-    const bestStart = bestGroup ? bestGroup.start : -1;
-    const bestEnd = bestGroup ? bestGroup.end : -1;
-    const bestLines = bestGroup ? bestGroup.lines : [];
-
-    const visible = bestGroup
-      ? filteredLogs.filter((_, index) => index < bestStart || index > bestEnd)
+    const visible = bestGroup.length
+      ? filteredLogs.filter((line, index) => {
+          const bestStart = filteredLogs.findIndex((_, i) => filteredLogs.slice(i, i + bestGroup.length).join("\n") === bestGroup.join("\n"));
+          if (bestStart === -1) return true;
+          return index < bestStart || index >= bestStart + bestGroup.length;
+        })
       : filteredLogs;
 
     return {
       visibleLogs: visible,
-      asciiQrLines: bestLines,
+      asciiQrLines: bestGroup,
       qrPayload: latestQrPayload,
     };
   }, [logs]);
@@ -271,44 +270,31 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
 
       {(qrImageUrl || asciiQrLines.length > 0) && (
         <div className="rounded-2xl border border-zinc-800 bg-zinc-950/90 p-4 shadow-2xl">
-          <div className="mx-auto w-full max-w-md overflow-hidden rounded-[28px] border border-zinc-200 bg-white shadow-[0_25px_80px_rgba(255,255,255,0.08)]">
-            <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-4">
-              <div>
-                <div className="text-xs font-black uppercase tracking-[0.2em] text-zinc-800">Birdserver</div>
-                <div className="mt-1 text-lg font-black text-zinc-950">WhatsApp Login QR</div>
-                <div className="mt-1 text-[11px] text-zinc-500">Scan via WhatsApp &gt; Perangkat Tertaut &gt; Tautkan Perangkat</div>
-              </div>
-              <div className="rounded-2xl bg-zinc-950 px-3 py-2 text-[11px] font-bold text-white">WA QR</div>
-            </div>
-
-            <div className="px-5 pb-5 pt-4">
-              <div className="mb-4 rounded-2xl bg-zinc-100 px-4 py-3 text-center text-xs font-medium text-zinc-600">
-                QR dirapikan Birdserver agar tetap jelas, medium, dan tidak menutupi console utama.
-              </div>
-
-              {qrImageUrl ? (
-                <div className="flex justify-center">
-                  <div className="rounded-[24px] border border-zinc-200 bg-white p-4 shadow-inner">
-                    <img
-                      src={qrImageUrl}
-                      alt="Bot QR"
-                      className="h-64 w-64 max-w-full rounded-xl object-contain sm:h-72 sm:w-72"
-                    />
-                  </div>
-                </div>
-              ) : asciiQrLines.length > 0 ? (
-                <div className="overflow-auto rounded-[24px] border border-zinc-200 bg-white p-4 text-black">
-                  <pre className="mx-auto w-fit whitespace-pre text-[6px] leading-[6px] sm:text-[7px] sm:leading-[7px] font-mono">
-                    {asciiQrLines.join("\n")}
-                  </pre>
-                </div>
-              ) : null}
-
-              <div className="mt-4 text-center text-[11px] text-zinc-500">
-                Jika QR expired, tunggu bot menghasilkan QR baru lalu scan ulang.
-              </div>
-            </div>
+          <div className="mb-3 flex items-center gap-2 text-sm font-bold text-white">
+            <ScanQrCode className="h-5 w-5 text-emerald-400" />
+            WhatsApp / Bot QR Scanner
           </div>
+          <p className="mb-4 text-xs text-zinc-400">
+            QR dirapikan oleh Birdserver agar tetap kecil/sedang, tidak menutupi console, dan tetap mudah dibaca saat discan.
+          </p>
+
+          {qrImageUrl ? (
+            <div className="flex justify-center">
+              <div className="rounded-2xl bg-white p-3 shadow-[0_0_24px_rgba(255,255,255,0.08)]">
+                <img
+                  src={qrImageUrl}
+                  alt="Bot QR"
+                  className="h-56 w-56 max-w-full rounded-lg object-contain sm:h-64 sm:w-64"
+                />
+              </div>
+            </div>
+          ) : asciiQrLines.length > 0 ? (
+            <div className="overflow-auto rounded-2xl bg-white p-3 text-black">
+              <pre className="mx-auto w-fit whitespace-pre text-[6px] leading-[6px] sm:text-[7px] sm:leading-[7px] font-mono">
+                {asciiQrLines.join("\n")}
+              </pre>
+            </div>
+          ) : null}
         </div>
       )}
 

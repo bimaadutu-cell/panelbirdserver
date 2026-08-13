@@ -77,15 +77,9 @@ export async function POST(req: Request) {
 
     return res;
   } catch (err: unknown) {
-    console.error("[Birdserver] login error:", err);
+    const errorMessage = err instanceof Error ? err.message : String(err);
     return NextResponse.json(
-      {
-        success: false,
-        error: {
-          code: "AUTH_SERVICE_UNAVAILABLE",
-          message: "Layanan login sedang menyiapkan database atau koneksi. Silakan coba lagi beberapa saat.",
-        },
-      },
+      { success: false, error: { code: "INTERNAL_ERROR", message: errorMessage } },
       { status: 500 }
     );
   }
