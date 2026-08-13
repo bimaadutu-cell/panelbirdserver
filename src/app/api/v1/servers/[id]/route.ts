@@ -39,19 +39,13 @@ export async function GET(
     const metrics = getServerMetrics(server.id);
     const actualStatus = metrics.status;
 
-    if (server.status !== actualStatus) {
-      await db
-        .update(servers)
-        .set({
-          status: actualStatus,
-          // Persist 0 when stopped instead of SQL NULL. This avoids a missing
-          // bind parameter in the hosted Postgres/Drizzle setup while retaining
-          // the same runtime semantics because PID 0 is never considered alive.
-          pid: actualStatus === "running" ? (server.pid ?? 0) : 0,
-          updatedAt: new Date(),
-        })
-        .where(eq(servers.id, id));
-    }
+    // IMPORTANT: do not write runtime status during a read request.
+    // The detail page polls this endpoint every few seconds. A read-time
+    // database UPDATE can fail independently of the page itself (and was the
+    // source of the "update servers set status=$1, pid=$2..." error seen on
+    // hosted Postgres). Runtime state is already available from the agent
+    // metrics, while power actions persist their own state explicitly.
+    // Keeping GET side-effect free makes /servers/:id safe to open and poll.
 
     return NextResponse.json({
       success: true,

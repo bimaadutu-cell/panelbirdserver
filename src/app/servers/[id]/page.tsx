@@ -68,10 +68,13 @@ export default function ServerDetailPage({
         setLoadError("Sesi login telah berakhir. Silakan login kembali.");
         router.replace("/");
       } else if (srvRes.status === 404) {
-        setServer(null);
+        // A real 404 means the resource is gone; keep the current UI if this
+        // is only a background poll so a transient response cannot blank the page.
+        if (!server) setServer(null);
         setLoadError("Server tidak ditemukan di database.");
       } else {
-        // Do not replace a previously loaded server with a transient error.
+        // Never replace an already-rendered server with a transient polling error.
+        // The next poll can recover automatically.
         setLoadError(
           srvData?.error?.message ||
           `Gagal memuat server (HTTP ${srvRes.status}).`

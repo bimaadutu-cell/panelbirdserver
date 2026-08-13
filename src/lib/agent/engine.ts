@@ -520,13 +520,13 @@ export async function startServer(serverId: string): Promise<boolean> {
 
   await db
     .update(servers)
-    .set({ status: "running", pid: child.pid ?? null, updatedAt: new Date() })
+    .set({ status: "running", pid: child.pid ?? 0, updatedAt: new Date() })
     .where(eq(servers.id, serverId));
 
   writeRuntimeState(serverId, {
     startedAt: new Date().toISOString(),
     lastCommand: server.startupCommand,
-    pid: child.pid ?? null,
+    pid: child.pid ?? 0,
   });
 
   appendConsoleOutput(serverId, `[Birdserver] Detached runtime started with PID ${child.pid}`);
