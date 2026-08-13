@@ -42,7 +42,14 @@ export async function GET(
     if (server.status !== actualStatus) {
       await db
         .update(servers)
-        .set({ status: actualStatus, pid: actualStatus === "running" ? server.pid : null, updatedAt: new Date() })
+        .set({
+          status: actualStatus,
+          // Persist 0 when stopped instead of SQL NULL. This avoids a missing
+          // bind parameter in the hosted Postgres/Drizzle setup while retaining
+          // the same runtime semantics because PID 0 is never considered alive.
+          pid: actualStatus === "running" ? (server.pid ?? 0) : 0,
+          updatedAt: new Date(),
+        })
         .where(eq(servers.id, id));
     }
 

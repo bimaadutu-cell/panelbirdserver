@@ -552,7 +552,9 @@ export async function stopServer(serverId: string): Promise<boolean> {
 
   await db
     .update(servers)
-    .set({ status: "stopped", pid: null, updatedAt: new Date() })
+    // PID 0 is the persisted "not running" sentinel. It avoids a NULL bind
+    // omission observed with some hosted Postgres/Drizzle configurations.
+    .set({ status: "stopped", pid: 0, updatedAt: new Date() })
     .where(eq(servers.id, serverId));
 
   return true;
@@ -583,7 +585,9 @@ export async function killServer(serverId: string): Promise<boolean> {
 
   await db
     .update(servers)
-    .set({ status: "stopped", pid: null, updatedAt: new Date() })
+    // PID 0 is the persisted "not running" sentinel. It avoids a NULL bind
+    // omission observed with some hosted Postgres/Drizzle configurations.
+    .set({ status: "stopped", pid: 0, updatedAt: new Date() })
     .where(eq(servers.id, serverId));
 
   return true;
