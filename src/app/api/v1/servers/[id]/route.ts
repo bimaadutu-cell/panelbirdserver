@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { authorizeServerRequest } from "@/lib/server-access";
+import { ensureDatabaseReady } from "@/db/bootstrap";
 import { db } from "@/db";
 import { servers, allocations } from "@/db/schema";
 import { stopServer, deleteServerItem, getServerMetrics } from "@/lib/agent/engine";
@@ -7,12 +8,26 @@ import { createAuditLog } from "@/lib/audit";
 import { dispatchWebhook } from "@/lib/webhooks";
 import { eq } from "drizzle-orm";
 
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
+
 export async function GET(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
 ) {
   try {
     const { id } = await params;
+    if (!id || id.trim().length < 3) {
+      return NextResponse.json(
+        { success: false, error: { code: "INVALID_SERVER_ID", message: "Invalid server ID" } },
+        { status: 400 }
+      );
+    }
+
+    // Deep links to /servers/:id can be opened before /api/v1/servers has
+    // initialized the database. Make the schema ready here as well.
+    await ensureDatabaseReady();
+
     const auth = await authorizeServerRequest(req, id);
     if (!auth.ok) return auth.response;
 

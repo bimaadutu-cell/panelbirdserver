@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState, use } from "react";
+import { useRouter } from "next/navigation";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { ServerMetricsGauge } from "@/components/server/ServerMetricsGauge";
 import { ConsoleView } from "@/components/server/ConsoleView";
@@ -35,18 +36,50 @@ export default function ServerDetailPage({
     "console" | "files" | "backups" | "databases" | "schedules" | "subusers" | "startup"
   >("console");
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const router = useRouter();
 
   const fetchServerDetails = async () => {
     try {
-      const meRes = await fetch("/api/auth/me");
-      const meData = await meRes.json();
-      if (meData.success) setUser(meData.data.user);
+      const meRes = await fetch("/api/auth/me", {
+        credentials: "include",
+        cache: "no-store",
+      });
+      const meData = await meRes.json().catch(() => null);
 
-      const srvRes = await fetch(`/api/v1/servers/${id}`);
-      const srvData = await srvRes.json();
-      if (srvData.success) setServer(srvData.data);
+      if (!meRes.ok || !meData?.success) {
+        setLoadError(meData?.error?.message || "Session tidak valid. Silakan login kembali.");
+        if (meRes.status === 401) router.replace("/");
+        return;
+      }
+
+      setUser(meData.data.user);
+
+      const srvRes = await fetch(`/api/v1/servers/${encodeURIComponent(id)}`, {
+        credentials: "include",
+        cache: "no-store",
+      });
+      const srvData = await srvRes.json().catch(() => null);
+
+      if (srvRes.ok && srvData?.success && srvData.data) {
+        setServer(srvData.data);
+        setLoadError(null);
+      } else if (srvRes.status === 401) {
+        setLoadError("Sesi login telah berakhir. Silakan login kembali.");
+        router.replace("/");
+      } else if (srvRes.status === 404) {
+        setServer(null);
+        setLoadError("Server tidak ditemukan di database.");
+      } else {
+        // Do not replace a previously loaded server with a transient error.
+        setLoadError(
+          srvData?.error?.message ||
+          `Gagal memuat server (HTTP ${srvRes.status}).`
+        );
+      }
     } catch (err) {
-      console.error(err);
+      console.error("[Birdserver] server detail load failed:", err);
+      setLoadError("Koneksi ke server gagal. Mencoba lagi...");
     } finally {
       setLoading(false);
     }
@@ -87,11 +120,28 @@ export default function ServerDetailPage({
   if (!server) {
     return (
       <div className="min-h-screen bg-transparent text-white flex items-center justify-center p-4 font-sans">
-        <div className="text-center space-y-3">
-          <h2 className="text-xl font-bold text-white">Server Not Found</h2>
-          <Link href="/servers" className="text-xs font-bold text-white underline">
-            Back to Servers
-          </Link>
+        <div className="text-center space-y-4 max-w-md">
+          <div>
+            <h2 className="text-xl font-bold text-white">
+              {loadError === "Server tidak ditemukan di database." ? "Server Not Found" : "Unable to Open Server"}
+            </h2>
+            <p className="text-xs text-zinc-400 mt-2">{loadError || "Memuat server..."}</p>
+          </div>
+          <div className="flex items-center justify-center gap-3">
+            <button
+              onClick={() => {
+                setLoading(true);
+                setLoadError(null);
+                fetchServerDetails();
+              }}
+              className="px-4 py-2 rounded-xl bg-white text-black text-xs font-bold"
+            >
+              Coba Lagi
+            </button>
+            <Link href="/servers" className="text-xs font-bold text-white underline">
+              Back to Servers
+            </Link>
+          </div>
         </div>
       </div>
     );
