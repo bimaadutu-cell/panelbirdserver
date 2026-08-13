@@ -1,6 +1,0 @@
-{
-  "startedAt": "2026-08-13T10:13:02.311Z",
-  "lastCommand": "if [[ -d .git ]] && [[ \"{{AUTO_UPDATE}}\" == \"1\" ]]; then git pull; fi; if [[ ! -z \"${NODE_PACKAGES}\" ]]; then /usr/local/bin/npm install ${NODE_PACKAGES}; fi; if [[ ! -z \"${UNNODE_PACKAGES}\" ]]; then /usr/local/bin/npm uninstall ${UNNODE_PACKAGES}; fi; if [ -f /home/container/package.json ]; then /usr/local/bin/npm install; fi; /usr/local/bin/node /home/container/${MAIN_FILE}",
-  "pid": 1675,
-  "lastExitAt": "2026-08-13T05:16:33.296Z"
-}

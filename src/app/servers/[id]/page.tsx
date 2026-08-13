@@ -37,6 +37,7 @@ export default function ServerDetailPage({
   >("console");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [powerError, setPowerError] = useState<string | null>(null);
   const router = useRouter();
 
   const fetchServerDetails = async () => {
@@ -95,6 +96,7 @@ export default function ServerDetailPage({
   }, [id]);
 
   const handlePowerAction = async (action: "start" | "stop" | "restart" | "kill") => {
+    setPowerError(null);
     try {
       const res = await fetch(`/api/v1/servers/${id}/power`, {
         method: "POST",
@@ -103,12 +105,12 @@ export default function ServerDetailPage({
       });
       const data = await res.json();
       if (data.success) {
-        fetchServerDetails();
+        await fetchServerDetails();
       } else {
-        alert(data.error?.message || "Power action failed");
+        setPowerError(data.error?.message || "Power action failed");
       }
     } catch {
-      alert("Power action failed");
+      setPowerError("Koneksi power action gagal. Silakan coba lagi.");
     }
   };
 
@@ -226,6 +228,12 @@ export default function ServerDetailPage({
             );
           })}
         </div>
+
+        {powerError && (
+          <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 px-4 py-3 text-xs text-amber-300">
+            {powerError}
+          </div>
+        )}
 
         {/* Tab Contents */}
         <div className="pt-2">

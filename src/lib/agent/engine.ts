@@ -277,9 +277,20 @@ function appendConsoleOutput(serverId: string, line: string) {
 
 function isPidAlive(pid: number | null | undefined) {
   if (!pid || pid <= 0) return false;
+
   try {
     process.kill(pid, 0);
     return true;
+  } catch {}
+
+  // Some hosted Linux environments can reject process.kill(pid, 0) even
+  // though the process is visible to the same container. Fall back to ps.
+  try {
+    const output = execSync(`ps -p ${Math.trunc(pid)} -o pid=`, {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return output === String(Math.trunc(pid));
   } catch {
     return false;
   }
@@ -461,7 +472,8 @@ export async function startServer(serverId: string): Promise<boolean> {
     throw new Error("Real bot runtime is not supported on Vercel. Use Railway or another persistent Node.js host.");
   }
 
-  if (isPidAlive(server.pid)) {
+  const persistedRuntimePid = readRuntimeState(serverId).pid ?? server.pid ?? null;
+  if (isPidAlive(persistedRuntimePid)) {
     appendConsoleOutput(serverId, "[Birdserver] Server already running");
     return true;
   }
@@ -518,18 +530,28 @@ export async function startServer(serverId: string): Promise<boolean> {
 
   child.unref();
 
-  await db
-    .update(servers)
-    .set({ status: "running", pid: child.pid ?? 0, updatedAt: new Date() })
-    .where(eq(servers.id, serverId));
-
+  // Persist runtime state first. The process itself is the source of truth
+  // for the live status page, so a hosted-Postgres write failure must never
+  // turn a successfully started process into a failed START request.
+  const runtimePid = child.pid ?? 0;
   writeRuntimeState(serverId, {
     startedAt: new Date().toISOString(),
     lastCommand: server.startupCommand,
-    pid: child.pid ?? 0,
+    pid: runtimePid,
+    lastExitAt: undefined,
   });
 
-  appendConsoleOutput(serverId, `[Birdserver] Detached runtime started with PID ${child.pid}`);
+  try {
+    await db
+      .update(servers)
+      .set({ status: "running", pid: runtimePid, updatedAt: new Date() })
+      .where(eq(servers.id, serverId));
+  } catch (dbError) {
+    console.warn(`[Birdserver] Database status sync skipped for ${serverId}:`, dbError);
+    appendConsoleOutput(serverId, `[Birdserver] Runtime status is active.`);
+  }
+
+  appendConsoleOutput(serverId, `[Birdserver] Detached runtime started with PID ${runtimePid}`);
   return true;
 }
 
@@ -537,12 +559,13 @@ export async function stopServer(serverId: string): Promise<boolean> {
   const server = await db.query.servers.findFirst({ where: eq(servers.id, serverId) });
   if (!server) throw new Error("Server not found");
 
-  if (server.pid && isPidAlive(server.pid)) {
+  const runtimePid = readRuntimeState(serverId).pid ?? server.pid ?? null;
+  if (runtimePid && isPidAlive(runtimePid)) {
     try {
-      process.kill(-server.pid, "SIGTERM");
+      process.kill(-runtimePid, "SIGTERM");
     } catch {
       try {
-        process.kill(server.pid, "SIGTERM");
+        process.kill(runtimePid, "SIGTERM");
       } catch {}
     }
   }
@@ -550,12 +573,16 @@ export async function stopServer(serverId: string): Promise<boolean> {
   appendConsoleOutput(serverId, `[Birdserver] Stop requested at ${new Date().toISOString()}`);
   writeRuntimeState(serverId, { lastExitAt: new Date().toISOString(), pid: null });
 
-  await db
-    .update(servers)
-    // PID 0 is the persisted "not running" sentinel. It avoids a NULL bind
-    // omission observed with some hosted Postgres/Drizzle configurations.
-    .set({ status: "stopped", pid: 0, updatedAt: new Date() })
-    .where(eq(servers.id, serverId));
+  try {
+    await db
+      .update(servers)
+      // PID 0 is the persisted "not running" sentinel.
+      .set({ status: "stopped", pid: 0, updatedAt: new Date() })
+      .where(eq(servers.id, serverId));
+  } catch (dbError) {
+    console.warn(`[Birdserver] Database stop sync skipped for ${serverId}:`, dbError);
+    appendConsoleOutput(serverId, `[Birdserver] Runtime stopped.`);
+  }
 
   return true;
 }
@@ -570,12 +597,13 @@ export async function killServer(serverId: string): Promise<boolean> {
   const server = await db.query.servers.findFirst({ where: eq(servers.id, serverId) });
   if (!server) throw new Error("Server not found");
 
-  if (server.pid && isPidAlive(server.pid)) {
+  const runtimePid = readRuntimeState(serverId).pid ?? server.pid ?? null;
+  if (runtimePid && isPidAlive(runtimePid)) {
     try {
-      process.kill(-server.pid, "SIGKILL");
+      process.kill(-runtimePid, "SIGKILL");
     } catch {
       try {
-        process.kill(server.pid, "SIGKILL");
+        process.kill(runtimePid, "SIGKILL");
       } catch {}
     }
   }
@@ -583,19 +611,28 @@ export async function killServer(serverId: string): Promise<boolean> {
   appendConsoleOutput(serverId, `[Birdserver] Kill requested at ${new Date().toISOString()}`);
   writeRuntimeState(serverId, { lastExitAt: new Date().toISOString(), pid: null });
 
-  await db
-    .update(servers)
-    // PID 0 is the persisted "not running" sentinel. It avoids a NULL bind
-    // omission observed with some hosted Postgres/Drizzle configurations.
-    .set({ status: "stopped", pid: 0, updatedAt: new Date() })
-    .where(eq(servers.id, serverId));
+  try {
+    await db
+      .update(servers)
+      // PID 0 is the persisted "not running" sentinel.
+      .set({ status: "stopped", pid: 0, updatedAt: new Date() })
+      .where(eq(servers.id, serverId));
+  } catch (dbError) {
+    console.warn(`[Birdserver] Database stop sync skipped for ${serverId}:`, dbError);
+    appendConsoleOutput(serverId, `[Birdserver] Runtime stopped.`);
+  }
 
   return true;
 }
 
 export async function sendCommandToServer(serverId: string, command: string): Promise<boolean> {
   const server = await db.query.servers.findFirst({ where: eq(servers.id, serverId) });
-  if (!server || !isPidAlive(server.pid)) {
+  if (!server) {
+    return false;
+  }
+
+  const runtimePid = readRuntimeState(serverId).pid ?? server.pid ?? null;
+  if (!isPidAlive(runtimePid)) {
     return false;
   }
 

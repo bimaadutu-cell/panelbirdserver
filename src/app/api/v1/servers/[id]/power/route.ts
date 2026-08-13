@@ -27,17 +27,29 @@ export async function POST(
     let success = false;
     if (action === "start") {
       success = await startServer(id);
-      await dispatchWebhook("server.started", { serverId: id });
+      try {
+        await dispatchWebhook("server.started", { serverId: id });
+      } catch (webhookError) {
+        console.warn("[Birdserver] start webhook skipped:", webhookError);
+      }
     } else if (action === "stop") {
       success = await stopServer(id);
-      await dispatchWebhook("server.stopped", { serverId: id });
+      try {
+        await dispatchWebhook("server.stopped", { serverId: id });
+      } catch (webhookError) {
+        console.warn("[Birdserver] stop webhook skipped:", webhookError);
+      }
     } else if (action === "restart") {
       success = await restartServer(id);
     } else if (action === "kill") {
       success = await killServer(id);
     }
 
-    await createAuditLog(session.id, `server.${action}`, { serverId: id });
+    try {
+      await createAuditLog(session.id, `server.${action}`, { serverId: id });
+    } catch (auditError) {
+      console.warn("[Birdserver] power audit log skipped:", auditError);
+    }
 
     return NextResponse.json({
       success,
