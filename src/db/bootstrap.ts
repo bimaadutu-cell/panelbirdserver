@@ -187,6 +187,31 @@ const ddlStatements = [
     ip_address text,
     created_at timestamp default now() not null
   )`,
+
+  // Lightweight forward-compatible migrations. This is important when a
+  // Railway PostgreSQL database already existed from an older Birdserver build.
+  `alter table users add column if not exists reseller_id text`,
+  `alter table users add column if not exists permissions jsonb default '[]'::jsonb`,
+  `alter table users add column if not exists two_factor_enabled boolean default false`,
+  `alter table users add column if not exists two_factor_secret text`,
+  `alter table users add column if not exists recovery_codes jsonb default '[]'::jsonb`,
+  `alter table users add column if not exists avatar text`,
+  `alter table users add column if not exists updated_at timestamp default now() not null`,
+
+  `alter table servers add column if not exists reseller_id text`,
+  `alter table servers add column if not exists allocation_id text`,
+  `alter table servers add column if not exists template_id text`,
+  `alter table servers add column if not exists env_vars jsonb default '{}'::jsonb`,
+  `alter table servers add column if not exists working_directory text default '/app'`,
+  `alter table servers add column if not exists expires_at timestamp`,
+  `alter table servers add column if not exists pid integer`,
+  `alter table servers add column if not exists updated_at timestamp default now() not null`,
+
+  `alter table allocations add column if not exists server_id text`,
+  `alter table templates add column if not exists default_env jsonb default '{}'::jsonb`,
+  `alter table api_keys add column if not exists last_used_at timestamp`,
+  `alter table webhooks add column if not exists events jsonb default '[]'::jsonb`,
+  `alter table audit_logs add column if not exists ip_address text`,
 ];
 
 async function executeWithRetry(statement: string, attempts = 3) {

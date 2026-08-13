@@ -317,5 +317,6 @@ export async function ensureSeedData() {
     console.log("[Birdserver] Seed completed successfully!");
   } catch (err) {
     console.error("[Birdserver] Seed error:", err);
+    throw err;
   }
 }

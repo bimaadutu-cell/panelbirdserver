@@ -27,9 +27,16 @@ export async function GET() {
         database: "disconnected",
         agent: "active",
         activeContainersCount: 0,
+        code: "DATABASE_UNAVAILABLE",
+        message:
+          process.env.NODE_ENV === "production"
+            ? "Database connection/bootstrap failed. Check Railway deployment logs."
+            : error instanceof Error
+              ? error.message
+              : String(error),
         timestamp: new Date().toISOString(),
       },
-      { status: 200 }
+      { status: 503 }
     );
   }
 }
