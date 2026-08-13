@@ -12,3 +12,23 @@ body {
 body {
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
 }
+
+
+/* Birdserver performance mode: keep interaction feedback immediate.
+   A browser/display still decides the real refresh rate (up to 120Hz). */
+@media (min-width: 1px) {
+  .transition-all { transition-duration: 80ms !important; }
+  .transition-colors { transition-duration: 60ms !important; }
+  .transition-opacity { transition-duration: 60ms !important; }
+  .duration-500 { transition-duration: 100ms !important; }
+  .duration-200 { transition-duration: 80ms !important; }
+}
+
+html {
+  scroll-behavior: auto;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button, a, input, select, textarea {
+  touch-action: manipulation;
+}

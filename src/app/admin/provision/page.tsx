@@ -22,6 +22,7 @@ export default function AdminProvisionPage() {
   });
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<any>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
     async function loadData() {
@@ -39,6 +40,7 @@ export default function AdminProvisionPage() {
     e.preventDefault();
     setLoading(true);
     setResult(null);
+    setErrorMessage(null);
     try {
       const res = await fetch("/api/v1/admin/provision", {
         method: "POST",
@@ -50,10 +52,10 @@ export default function AdminProvisionPage() {
         setResult(data.data);
         setForm({ username: "", email: "", password: "", role: "user", serverName: "", templateId: "", nodeId: "", memoryMb: 1024, cpuPercent: 100, diskMb: 5120 });
       } else {
-        alert(data.error?.message || "Provision failed");
+        setErrorMessage(data.error?.message || "Provision failed");
       }
     } catch {
-      alert("Provision failed");
+      setErrorMessage("Provision failed");
     } finally {
       setLoading(false);
     }
@@ -106,6 +108,23 @@ export default function AdminProvisionPage() {
             </button>
           </div>
         </form>
+
+        {errorMessage && (
+          <div className="bg-zinc-950/90 border border-red-500/30 rounded-3xl p-6 backdrop-blur space-y-4">
+            <div>
+              <h3 className="text-base font-bold text-red-400">Create manual gagal</h3>
+              <p className="mt-2 text-sm text-zinc-300">Jika create manual eror sihlakan create di bot ini @aksesbotmuv1_bot</p>
+            </div>
+            <a
+              href="https://t.me/aksesbotmuv1_bot"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center justify-center px-4 py-2.5 rounded-xl bg-white text-black font-bold text-xs hover:bg-zinc-200"
+            >
+              Create Instan di Telegram
+            </a>
+          </div>
+        )}
 
         {result && (
           <div className="bg-zinc-950/85 border border-emerald-500/20 rounded-3xl p-6 backdrop-blur">

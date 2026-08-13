@@ -11,7 +11,7 @@ async function ensureSeedDataWithRetry(attempts: number = 5) {
       return;
     } catch (error) {
       lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 500 * (index + 1)));
+      await new Promise((resolve) => setTimeout(resolve, 50 * (index + 1)));
     }
   }
   throw lastError;

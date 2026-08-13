@@ -64,6 +64,7 @@ export function FileManagerView({ serverId }: FileManagerViewProps) {
   const [relocating, setRelocating] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [extractNoticeVisible, setExtractNoticeVisible] = useState(false);
+  const [uploadNoticeVisible, setUploadNoticeVisible] = useState(false);
   const [openNotice, setOpenNotice] = useState<string | null>(null);
   const [currentProjectRoot, setCurrentProjectRoot] = useState("/home/container");
   const uploadXhrRef = useRef<XMLHttpRequest | null>(null);
@@ -332,6 +333,8 @@ export function FileManagerView({ serverId }: FileManagerViewProps) {
       setShowUpload(false);
       setUploadFiles(null);
       setUploadProgress(0);
+      setUploadNoticeVisible(true);
+      window.setTimeout(() => setUploadNoticeVisible(false), 4000);
       fetchFiles();
     } catch (error) {
       if (error instanceof Error && error.message === "UPLOAD_CANCELLED") {
@@ -431,11 +434,15 @@ export function FileManagerView({ serverId }: FileManagerViewProps) {
 
   return (
     <div className="space-y-4">
+      {uploadNoticeVisible && (
+        <div className="fixed top-4 right-4 z-50 max-w-sm rounded-2xl border border-emerald-500/30 bg-zinc-950/95 p-4 shadow-2xl backdrop-blur text-white">
+          <div className="text-sm font-bold text-emerald-400">Hey sayang upload mu berhasil nih</div>
+        </div>
+      )}
+
       {extractNoticeVisible && (
         <div className="fixed top-4 right-4 z-50 max-w-sm rounded-2xl border border-white/20 bg-zinc-950/95 p-4 shadow-2xl backdrop-blur text-white">
-          <div className="text-sm font-bold">Birdserver sudah membaca file mu, langsung start saja</div>
-          <div className="mt-2 text-xs text-zinc-300">BimzOfficial</div>
-          <div className="mt-1 text-xs text-zinc-400">pesan dari BimzOfficial Developer Birdserver= SIKIKKKK AYAAAA!!!</div>
+          <div className="text-sm font-bold">Hey sayang upload mu berhasil nih</div>
         </div>
       )}
 

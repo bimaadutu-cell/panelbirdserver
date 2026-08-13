@@ -201,6 +201,7 @@ const tables: Record<string, TableDefinition> = {
       created_at timestamp default now() not null
     )`,
     columns: {
+      user_id: `alter table api_keys add column if not exists user_id text`,
       name: `alter table api_keys add column if not exists name text not null default 'API Key'`,
       key_hash: `alter table api_keys add column if not exists key_hash text not null default ''`,
       key_prefix: `alter table api_keys add column if not exists key_prefix text not null default ''`,
@@ -208,6 +209,7 @@ const tables: Record<string, TableDefinition> = {
       expires_at: `alter table api_keys add column if not exists expires_at timestamp`,
       last_used_at: `alter table api_keys add column if not exists last_used_at timestamp`,
       created_at: `alter table api_keys add column if not exists created_at timestamp default now() not null`,
+      _created_at_default_fix: `alter table api_keys alter column created_at set default now()`,
     },
   },
   backups: {
@@ -404,6 +406,10 @@ async function runBootstrapForTables(tableNames: string[]) {
 
     const existingColumns = await getExistingColumns(tableName);
     for (const [columnName, alterStatement] of Object.entries(definition.columns)) {
+      if (columnName.startsWith('_')) {
+        await executeWithRetry(alterStatement);
+        continue;
+      }
       if (!existingColumns.has(columnName)) {
         await executeWithRetry(alterStatement);
       }
