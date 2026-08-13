@@ -1,10 +1,7 @@
 import { NextResponse } from "next/server";
-import { db } from "@/db";
-import { users } from "@/db/schema";
-import { comparePassword, signToken, COOKIE_NAME } from "@/lib/auth";
+import { comparePassword, signToken, COOKIE_NAME, findAuthUserByLogin } from "@/lib/auth";
 import { createAuditLog } from "@/lib/audit";
 import { ensureAuthSeedData } from "@/lib/seed";
-import { eq, or } from "drizzle-orm";
 
 async function ensureSeedDataWithRetry(attempts: number = 5) {
   let lastError: unknown;
@@ -34,10 +31,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const user = await db.query.users.findFirst({
-      where: or(eq(users.email, usernameOrEmail), eq(users.username, usernameOrEmail)),
-    });
-
+    const user = await findAuthUserByLogin(usernameOrEmail);
     if (!user) {
       return NextResponse.json(
         { success: false, error: { code: "INVALID_CREDENTIALS", message: "Invalid username/email or password" } },
@@ -45,14 +39,24 @@ export async function POST(req: Request) {
       );
     }
 
-    if (user.status === "suspended") {
+    const normalizedRole = (user.role || "user").toLowerCase() === "pengguna" ? "user" : (user.role || "user").toLowerCase();
+    const normalizedStatus = user.status || "active";
+
+    if (normalizedStatus === "suspended") {
       return NextResponse.json(
         { success: false, error: { code: "ACCOUNT_SUSPENDED", message: "Your account is suspended. Please contact administrator." } },
         { status: 403 }
       );
     }
 
-    const isValid = await comparePassword(password, user.passwordHash);
+    let isValid = false;
+    if (user.password_hash) {
+      isValid = await comparePassword(password, user.password_hash);
+    }
+    if (!isValid && user.password) {
+      isValid = user.password === password;
+    }
+
     if (!isValid) {
       return NextResponse.json(
         { success: false, error: { code: "INVALID_CREDENTIALS", message: "Invalid username/email or password" } },
@@ -61,31 +65,24 @@ export async function POST(req: Request) {
     }
 
     const sessionPayload = {
-      id: user.id,
-      email: user.email,
+      id: String(user.id),
+      email: user.email || "",
       username: user.username,
-      role: user.role as "admin" | "reseller" | "user",
-      permissions: user.permissions || [],
-      status: user.status,
-      resellerId: user.resellerId,
+      role: normalizedRole as "admin" | "reseller" | "user",
+      permissions: Array.isArray(user.permissions) ? (user.permissions as string[]) : [],
+      status: normalizedStatus,
+      resellerId: user.reseller_id,
     };
 
     const token = signToken(sessionPayload);
+    await createAuditLog(sessionPayload.id, "user.login", { username: sessionPayload.username, role: sessionPayload.role });
 
-    await createAuditLog(user.id, "user.login", { username: user.username, role: user.role });
-
-    const res = NextResponse.json({
-      success: true,
-      data: {
-        user: sessionPayload,
-      },
-    });
-
+    const res = NextResponse.json({ success: true, data: { user: sessionPayload } });
     res.cookies.set(COOKIE_NAME, token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       path: "/",
-      maxAge: 60 * 60 * 24 * 7, // 7 days
+      maxAge: 60 * 60 * 24 * 7,
       sameSite: "lax",
     });
 

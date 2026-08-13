@@ -156,9 +156,13 @@ const tables: Record<string, TableDefinition> = {
       updated_at timestamp default now() not null
     )`,
     columns: {
+      identifier: `alter table servers add column if not exists identifier text`,
+      user_id: `alter table servers add column if not exists user_id text`,
       reseller_id: `alter table servers add column if not exists reseller_id text`,
       allocation_id: `alter table servers add column if not exists allocation_id text`,
       template_id: `alter table servers add column if not exists template_id text`,
+      docker_image: `alter table servers add column if not exists docker_image text not null default 'node:20-alpine'`,
+      startup_command: `alter table servers add column if not exists startup_command text not null default ''`,
       working_directory: `alter table servers add column if not exists working_directory text default '/app'`,
       env_vars: `alter table servers add column if not exists env_vars jsonb default '{}'::jsonb`,
       memory_mb: `alter table servers add column if not exists memory_mb integer not null default 1024`,
