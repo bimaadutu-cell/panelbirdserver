@@ -423,6 +423,9 @@ async function runBootstrap() {
 
 export async function ensureAuthDatabaseReady() {
   await runBootstrapForTables(["users", "api_keys", "audit_logs"]);
+  // The API-key route performs the final legacy-schema self-heal immediately
+  // before reading/writing, so existing Railway databases do not need a manual
+  // migration command.
 }
 
 export async function ensureDatabaseReady() {
