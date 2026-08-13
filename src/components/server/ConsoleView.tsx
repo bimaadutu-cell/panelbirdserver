@@ -10,12 +10,8 @@ interface ConsoleViewProps {
   onPowerAction: (action: "start" | "stop" | "restart" | "kill") => Promise<void>;
 }
 
-function stripAnsi(value: string) {
-  return value.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
-}
-
 function isQrAsciiLine(line: string) {
-  const trimmed = stripAnsi(line).trimEnd();
+  const trimmed = line.trimEnd();
   if (!trimmed) return false;
   if (trimmed.length < 18) return false;
   return /^[\s\u2580-\u259F\u25A0-\u25FF]+$/.test(trimmed);
@@ -303,7 +299,7 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
               ) : asciiQrLines.length > 0 ? (
                 <div className="overflow-auto rounded-[24px] border border-zinc-200 bg-white p-4 text-black">
                   <pre className="mx-auto w-fit whitespace-pre text-[6px] leading-[6px] sm:text-[7px] sm:leading-[7px] font-mono">
-                    {asciiQrLines.map((line) => stripAnsi(line)).join("\n")}
+                    {asciiQrLines.join("\n")}
                   </pre>
                 </div>
               ) : null}

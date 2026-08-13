@@ -36,49 +36,6 @@ function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-function buildRuntimePath(existingPath?: string) {
-  const entries = [
-    existingPath,
-    process.env.PATH,
-    path.dirname(process.execPath),
-    "/usr/local/bin",
-    "/usr/bin",
-    "/bin",
-    "/app/.nix-profile/bin",
-    "/layers/heroku_nodejs-engine/bin",
-  ]
-    .flatMap((item) => (item ? item.split(":") : []))
-    .filter(Boolean);
-
-  return Array.from(new Set(entries)).join(":");
-}
-
-function detectHostBinary(command: string, fallback: string) {
-  try {
-    const resolved = execSync(`command -v ${command}`, {
-      encoding: "utf-8",
-      env: {
-        ...process.env,
-        PATH: buildRuntimePath(process.env.PATH),
-      },
-    })
-      .trim()
-      .split(/\r?\n/)
-      .filter(Boolean)[0];
-
-    return resolved || fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-const hostBinaries = {
-  node: detectHostBinary("node", process.execPath || "/usr/local/bin/node"),
-  npm: detectHostBinary("npm", "npm"),
-  npx: detectHostBinary("npx", "npx"),
-  bash: detectHostBinary("bash", "/bin/bash"),
-};
-
 function detectMainFile(serverRoot: string) {
   const candidates = ["index.js", "app.js", "server.js", "main.js", "dist/index.js", "src/index.js"];
 
@@ -131,15 +88,15 @@ export function getDefaultServerEnv(templateCategory: string, projectRootPath?: 
 function resolveNodeExecutable(runtimeVersion?: string | null) {
   const normalized = (runtimeVersion || "system").trim().toLowerCase();
   if (!normalized || normalized === "system") {
-    return hostBinaries.node;
+    return "/usr/local/bin/node";
   }
 
   const version = normalized.replace(/^v/, "");
   if (/^\d+$/.test(version)) {
-    return `${hostBinaries.npx} -y node@${version}`;
+    return `npx -y node@${version}`;
   }
 
-  return hostBinaries.node;
+  return "/usr/local/bin/node";
 }
 
 function normalizeStartupCommand(rawCommand: string, projectRootPath: string, runtimeVersion?: string | null) {
@@ -147,9 +104,6 @@ function normalizeStartupCommand(rawCommand: string, projectRootPath: string, ru
   return rawCommand
     .replaceAll("/home/container", projectRootPath)
     .replaceAll("/usr/local/bin/node", nodeExecutable)
-    .replaceAll("/usr/bin/node", nodeExecutable)
-    .replaceAll("/usr/local/bin/npm", hostBinaries.npm)
-    .replaceAll("/usr/bin/npm", hostBinaries.npm)
     .replace(/\{\{\s*([A-Z0-9_]+)\s*\}\}/g, "${$1}");
 }
 
@@ -435,13 +389,6 @@ export async function startServer(serverId: string): Promise<boolean> {
   const server = await db.query.servers.findFirst({ where: eq(servers.id, serverId) });
   if (!server) throw new Error("Server not found");
   if (server.status === "suspended") throw new Error("Server is suspended");
-  if (process.env.VERCEL === "1") {
-    appendConsoleOutput(
-      serverId,
-      "[Birdserver] Real long-lived bot runtime is not supported on Vercel serverless. Deploy Birdserver on Railway or another persistent Node host for real bot execution."
-    );
-    throw new Error("Real bot runtime is not supported on Vercel. Use Railway or another persistent Node.js host.");
-  }
 
   if (isPidAlive(server.pid)) {
     appendConsoleOutput(serverId, "[Birdserver] Server already running");
@@ -467,7 +414,6 @@ export async function startServer(serverId: string): Promise<boolean> {
     NODE_ENV: process.env.NODE_ENV || "production",
     PWD: runtimeWorkingDirectory,
     HOME: serverRoot,
-    PATH: buildRuntimePath(process.env.PATH),
   };
 
   if (!runtimeEnv.MAIN_FILE) runtimeEnv.MAIN_FILE = detectMainFile(runtimeWorkingDirectory);
@@ -485,12 +431,12 @@ export async function startServer(serverId: string): Promise<boolean> {
   fs.writeFileSync(inputLogPath, "", "utf-8");
   fs.appendFileSync(
     outputLogPath,
-    `\n[Birdserver] ===== START ${new Date().toISOString()} =====\n[Birdserver] Server Root: ${serverRoot}\n[Birdserver] Working Dir: ${runtimeWorkingDirectory}\n[Birdserver] Startup Command: ${server.startupCommand}\n[Birdserver] Resolved Startup: ${finalStartupCommand}\n[Birdserver] MAIN_FILE=${runtimeEnv.MAIN_FILE}\n[Birdserver] NODE_BIN=${hostBinaries.node}\n[Birdserver] NPM_BIN=${hostBinaries.npm}\n[Birdserver] NPX_BIN=${hostBinaries.npx}\n[Birdserver] PATH=${runtimeEnv.PATH}\n`,
+    `\n[Birdserver] ===== START ${new Date().toISOString()} =====\n[Birdserver] Server Root: ${serverRoot}\n[Birdserver] Working Dir: ${runtimeWorkingDirectory}\n[Birdserver] Startup Command: ${server.startupCommand}\n[Birdserver] Resolved Startup: ${finalStartupCommand}\n[Birdserver] MAIN_FILE=${runtimeEnv.MAIN_FILE}\n`,
     "utf-8"
   );
 
-  const command = `tail -n 0 -F ${shellQuote(inputLogPath)} | ${hostBinaries.bash} -lc ${shellQuote(finalStartupCommand)} >> ${shellQuote(outputLogPath)} 2>&1`;
-  const child = spawn(hostBinaries.bash, ["-lc", command], {
+  const command = `tail -n 0 -F ${shellQuote(inputLogPath)} | bash -lc ${shellQuote(finalStartupCommand)} >> ${shellQuote(outputLogPath)} 2>&1`;
+  const child = spawn("bash", ["-lc", command], {
     cwd: runtimeWorkingDirectory,
     env: runtimeEnv,
     detached: true,
