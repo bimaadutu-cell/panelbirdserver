@@ -6,9 +6,23 @@ import { createAuditLog } from "@/lib/audit";
 import { ensureSeedData } from "@/lib/seed";
 import { eq, or } from "drizzle-orm";
 
+async function ensureSeedDataWithRetry(attempts: number = 5) {
+  let lastError: unknown;
+  for (let index = 0; index < attempts; index += 1) {
+    try {
+      await ensureSeedData();
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 500 * (index + 1)));
+    }
+  }
+  throw lastError;
+}
+
 export async function POST(req: Request) {
   try {
-    await ensureSeedData();
+    await ensureSeedDataWithRetry();
 
     const body = await req.json();
     const { usernameOrEmail, password } = body;
