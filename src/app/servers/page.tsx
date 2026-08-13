@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from "react";
 import { Sidebar } from "@/components/layout/Sidebar";
 import Link from "next/link";
-import { Server, Plus, Search, Play, Square, ExternalLink, HardDrive, Cpu, X } from "lucide-react";
+import { Server, Plus, Search, Play, Square, ExternalLink, HardDrive, Cpu, X, Trash2 } from "lucide-react";
 
 export default function ServersPage() {
   const [user, setUser] = useState<any>(null);
@@ -75,6 +75,21 @@ export default function ServersPage() {
       alert("Server creation failed");
     } finally {
       setDeploying(false);
+    }
+  };
+
+  const handleDeleteServer = async (serverId: string, serverName: string) => {
+    if (!confirm(`Hapus server ${serverName}?`)) return;
+    try {
+      const res = await fetch(`/api/v1/servers/${serverId}`, { method: "DELETE" });
+      const data = await res.json();
+      if (data.success) {
+        fetchServers();
+      } else {
+        alert(data.error?.message || "Server delete failed");
+      }
+    } catch {
+      alert("Server delete failed");
     }
   };
 
@@ -165,13 +180,24 @@ export default function ServersPage() {
                   </div>
                 </div>
 
-                <Link
-                  href={`/servers/${server.id}`}
-                  className="w-full py-2 rounded-xl bg-white text-black font-bold text-xs hover:bg-zinc-200 transition-all flex items-center justify-center gap-1.5 shadow-[0_0_10px_rgba(255,255,255,0.2)]"
-                >
-                  <span>Open Console & Files</span>
-                  <ExternalLink className="w-3.5 h-3.5" />
-                </Link>
+                <div className="flex gap-2">
+                  <Link
+                    href={`/servers/${server.id}`}
+                    className="flex-1 py-2 rounded-xl bg-white text-black font-bold text-xs hover:bg-zinc-200 transition-all flex items-center justify-center gap-1.5 shadow-[0_0_10px_rgba(255,255,255,0.2)]"
+                  >
+                    <span>Open Console & Files</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </Link>
+                  {user?.role === "admin" ? (
+                    <button
+                      onClick={() => handleDeleteServer(server.id, server.name)}
+                      className="px-3 py-2 rounded-xl bg-red-950/80 text-red-400 border border-red-800/80 hover:bg-red-900 transition-all"
+                      title="Delete Server"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  ) : null}
+                </div>
               </div>
             </div>
           ))}

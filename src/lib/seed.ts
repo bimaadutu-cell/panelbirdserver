@@ -3,16 +3,79 @@ import { users, resellers, nodes, allocations, templates, packages, servers } fr
 import { hashPassword } from "@/lib/auth";
 import { generateServerIdentifier } from "@/lib/utils";
 import { initializeServerFiles, DEFAULT_NODE_STARTUP_COMMAND, getDefaultServerEnv } from "@/lib/agent/engine";
-import { eq } from "drizzle-orm";
+import { ensureAuthDatabaseReady, ensureDatabaseReady } from "@/db/bootstrap";
+import { eq, or } from "drizzle-orm";
+
+export async function ensureAuthSeedData() {
+  await ensureAuthDatabaseReady();
+
+  const adminPassHash = await hashPassword("Admin123!");
+  const resellerPassHash = await hashPassword("Reseller123!");
+  const userPassHash = await hashPassword("User123!");
+
+  const authUsers = [
+    {
+      id: "usr_admin_01",
+      email: "admin@birdserver.local",
+      username: "admin",
+      passwordHash: adminPassHash,
+      role: "admin",
+      status: "active",
+      resellerId: null,
+      permissions: ["*"],
+    },
+    {
+      id: "usr_reseller_01",
+      email: "reseller@birdserver.local",
+      username: "reseller",
+      passwordHash: resellerPassHash,
+      role: "reseller",
+      status: "active",
+      resellerId: null,
+      permissions: ["reseller.manage"],
+    },
+    {
+      id: "usr_user_01",
+      email: "user@birdserver.local",
+      username: "user",
+      passwordHash: userPassHash,
+      role: "user",
+      status: "active",
+      resellerId: "usr_reseller_01",
+      permissions: ["server.create", "server.console", "server.files"],
+    },
+  ];
+
+  for (const item of authUsers) {
+    const existing = await db.query.users.findFirst({
+      where: or(eq(users.email, item.email), eq(users.username, item.username), eq(users.id, item.id)),
+    });
+
+    if (existing) {
+      await db
+        .update(users)
+        .set({
+          email: item.email,
+          username: item.username,
+          passwordHash: item.passwordHash,
+          role: item.role,
+          status: item.status,
+          resellerId: item.resellerId,
+          permissions: item.permissions,
+          updatedAt: new Date(),
+        })
+        .where(eq(users.id, existing.id));
+    } else {
+      await db.insert(users).values(item).onConflictDoNothing();
+    }
+  }
+}
 
 export async function ensureSeedData() {
   try {
-    const existingUsers = await db.select().from(users);
-    if (existingUsers.length > 0) {
-      return; // Already seeded
-    }
-
-    console.log("[Birdserver] Seeding initial production data...");
+    await ensureAuthSeedData();
+    await ensureDatabaseReady();
+    console.log("[Birdserver] Ensuring seed data...");
 
     // 1. Create Users
     const adminPassHash = await hashPassword("Admin123!");
@@ -52,7 +115,7 @@ export async function ensureSeedData() {
         resellerId: resellerUserId,
         permissions: ["server.create", "server.console", "server.files"],
       },
-    ]);
+    ]).onConflictDoNothing();
 
     // 2. Create Reseller Profile
     await db.insert(resellers).values({
@@ -64,7 +127,7 @@ export async function ensureSeedData() {
       diskLimitMb: 102400, // 100 GB
       maxServers: 20,
       maxCustomers: 50,
-    });
+    }).onConflictDoNothing();
 
     // 3. Create Nodes
     const nodeId = "node_01";
@@ -134,7 +197,7 @@ export async function ensureSeedData() {
         agentToken: "bs_agent_token_secret_998881",
         status: "online",
       },
-    ]);
+    ]).onConflictDoNothing();
 
     // 4. Create Allocations
     const alloc1Id = "alloc_25565";
@@ -203,7 +266,7 @@ export async function ensureSeedData() {
         alias: "node5.birdserver.local",
         isAssigned: false,
       },
-    ]);
+    ]).onConflictDoNothing();
 
     // 5. Create Templates (Eggs)
     const nodeEggId = "egg_nodejs";
@@ -253,7 +316,7 @@ export async function ensureSeedData() {
         description: "Lightweight shell script executor",
         defaultEnv: { RUN_ENV: "production" },
       },
-    ]);
+    ]).onConflictDoNothing();
 
     // 6. Create Packages
     await db.insert(packages).values([
@@ -284,7 +347,7 @@ export async function ensureSeedData() {
         price: 200000, // 200,000 IDR
         durationDays: 30,
       },
-    ]);
+    ]).onConflictDoNothing();
 
     // 7. Create Demo Server
     const server1Id = "srv_demo_01";
@@ -307,7 +370,7 @@ export async function ensureSeedData() {
       diskMb: 5120,
       status: "stopped",
       expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // +30 days
-    });
+    }).onConflictDoNothing();
 
     // Initialize server files on disk
     initializeServerFiles(server1Id, "Node.js");
@@ -315,5 +378,6 @@ export async function ensureSeedData() {
     console.log("[Birdserver] Seed completed successfully!");
   } catch (err) {
     console.error("[Birdserver] Seed error:", err);
+    throw err;
   }
 }

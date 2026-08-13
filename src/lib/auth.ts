@@ -2,6 +2,7 @@ import jwt from "jsonwebtoken";
 import bcrypt from "bcryptjs";
 import { cookies } from "next/headers";
 import { db } from "@/db";
+import { ensureAuthDatabaseReady } from "@/db/bootstrap";
 import { users, apiKeys } from "@/db/schema";
 import { eq } from "drizzle-orm";
 
@@ -40,6 +41,7 @@ export function verifyToken(token: string): UserSession | null {
 
 export async function getSessionUser(): Promise<UserSession | null> {
   try {
+    await ensureAuthDatabaseReady();
     const cookieStore = await cookies();
     const token = cookieStore.get(COOKIE_NAME)?.value;
     
@@ -74,6 +76,7 @@ export async function getSessionUser(): Promise<UserSession | null> {
 }
 
 export async function authenticateApiKey(authHeader: string | null): Promise<UserSession | null> {
+  await ensureAuthDatabaseReady();
   if (!authHeader || !authHeader.startsWith("Bearer bs_")) {
     return null;
   }

@@ -3,12 +3,26 @@ import { db } from "@/db";
 import { users } from "@/db/schema";
 import { comparePassword, signToken, COOKIE_NAME } from "@/lib/auth";
 import { createAuditLog } from "@/lib/audit";
-import { ensureSeedData } from "@/lib/seed";
+import { ensureAuthSeedData } from "@/lib/seed";
 import { eq, or } from "drizzle-orm";
+
+async function ensureSeedDataWithRetry(attempts: number = 5) {
+  let lastError: unknown;
+  for (let index = 0; index < attempts; index += 1) {
+    try {
+      await ensureAuthSeedData();
+      return;
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 500 * (index + 1)));
+    }
+  }
+  throw lastError;
+}
 
 export async function POST(req: Request) {
   try {
-    await ensureSeedData();
+    await ensureSeedDataWithRetry();
 
     const body = await req.json();
     const { usernameOrEmail, password } = body;
@@ -77,9 +91,15 @@ export async function POST(req: Request) {
 
     return res;
   } catch (err: unknown) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
+    console.error("[Birdserver] login error:", err);
     return NextResponse.json(
-      { success: false, error: { code: "INTERNAL_ERROR", message: errorMessage } },
+      {
+        success: false,
+        error: {
+          code: "AUTH_SERVICE_UNAVAILABLE",
+          message: "Layanan login sedang menyiapkan database atau koneksi. Silakan coba lagi beberapa saat.",
+        },
+      },
       { status: 500 }
     );
   }

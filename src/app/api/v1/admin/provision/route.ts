@@ -11,11 +11,15 @@ import { eq } from "drizzle-orm";
 const provisionRequests = new Map<string, unknown>();
 
 function getPublicBaseUrl(req: Request) {
+  if (process.env.APP_URL) {
+    return process.env.APP_URL.replace(/\/$/, "");
+  }
+
   const url = new URL(req.url);
   const forwardedProto = req.headers.get("x-forwarded-proto");
   const forwardedHost = req.headers.get("x-forwarded-host") || req.headers.get("host");
   if (forwardedHost) {
-    return `${forwardedProto || url.protocol.replace(":", "") }://${forwardedHost}`;
+    return `${forwardedProto || url.protocol.replace(":", "")}://${forwardedHost}`;
   }
   return url.origin;
 }

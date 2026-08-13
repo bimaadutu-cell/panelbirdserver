@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 import { getSessionUser, authenticateApiKey, COOKIE_NAME } from "@/lib/auth";
-import { ensureSeedData } from "@/lib/seed";
+import { ensureAuthSeedData } from "@/lib/seed";
 import { getResellerQuotaAndUsage } from "@/lib/reseller";
 
 export async function GET(req: Request) {
   try {
-    await ensureSeedData();
+    await ensureAuthSeedData();
 
     // Check header for API key auth or fallback to session cookie
     const authHeader = req.headers.get("authorization");
@@ -23,7 +23,11 @@ export async function GET(req: Request) {
 
     let resellerUsage = null;
     if (session.role === "reseller") {
-      resellerUsage = await getResellerQuotaAndUsage(session.id);
+      try {
+        resellerUsage = await getResellerQuotaAndUsage(session.id);
+      } catch {
+        resellerUsage = null;
+      }
     }
 
     return NextResponse.json({
