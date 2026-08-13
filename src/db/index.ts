@@ -28,7 +28,15 @@ function getDatabaseUrl(): string {
   }
 
   // Users sometimes paste the value with surrounding quotes into Railway.
-  return raw.trim().replace(/^(['"])(.*)\1$/s, "$2");
+  const value = raw.trim();
+  if (value.length >= 2) {
+    const first = value[0];
+    const last = value[value.length - 1];
+    if ((first === "'" || first === '"') && last === first) {
+      return value.slice(1, -1);
+    }
+  }
+  return value;
 }
 
 const databaseUrl = getDatabaseUrl();
