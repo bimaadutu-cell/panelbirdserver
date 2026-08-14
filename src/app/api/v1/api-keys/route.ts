@@ -47,6 +47,15 @@ async function ensureApiKeysTable() {
   `);
 
   const columns = await getApiKeyColumns();
+
+  // Legacy deployments sometimes created api_keys.user_id as INTEGER while
+  // BirdServer users use TEXT ids such as usr_xxx. Normalize that column so
+  // API keys can authenticate the same account on every deployment.
+  const legacyUserColumn = columns.get("user_id");
+  if (legacyUserColumn && ["integer", "bigint", "smallint"].includes(legacyUserColumn.data_type)) {
+    await pool.query(`ALTER TABLE api_keys ALTER COLUMN user_id TYPE TEXT USING user_id::text`);
+  }
+
   const required: Array<[string, string]> = [
     ["user_id", "TEXT"],
     ["name", "TEXT NOT NULL DEFAULT 'API Key'"],

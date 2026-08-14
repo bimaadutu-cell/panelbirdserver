@@ -16,6 +16,13 @@ export default function AdminUsersPage() {
   const [password, setPassword] = useState("");
   const [role, setRole] = useState("user");
   const [creating, setCreating] = useState(false);
+  const [createServer, setCreateServer] = useState(true);
+  const [serverName, setServerName] = useState("");
+  const [templateId, setTemplateId] = useState("");
+  const [memoryMb, setMemoryMb] = useState(1024);
+  const [cpuPercent, setCpuPercent] = useState(100);
+  const [diskMb, setDiskMb] = useState(5120);
+  const [templates, setTemplates] = useState<any[]>([]);
 
   const fetchUsers = async () => {
     setLoading(true);
@@ -27,6 +34,9 @@ export default function AdminUsersPage() {
       const uRes = await fetch("/api/v1/admin/users");
       const uData = await uRes.json();
       if (uData.success) setUsersList(uData.data || []);
+      const tmplRes = await fetch("/api/v1/admin/templates");
+      const tmplData = await tmplRes.json();
+      if (tmplData.success) setTemplates(tmplData.data || []);
     } catch (err) {
       console.error(err);
     } finally {
@@ -43,10 +53,24 @@ export default function AdminUsersPage() {
     setCreating(true);
 
     try {
-      const res = await fetch("/api/v1/admin/users", {
+      const res = await fetch("/api/v1/admin/provision", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, email, password, role }),
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": `manual-${Date.now()}-${username}`,
+        },
+        body: JSON.stringify({
+          username,
+          email,
+          password,
+          role,
+          createServer,
+          serverName: serverName.trim() || undefined,
+          templateId: templateId || undefined,
+          memoryMb: Number(memoryMb),
+          cpuPercent: Number(cpuPercent),
+          diskMb: Number(diskMb),
+        }),
       });
       const data = await res.json();
       if (data.success) {
@@ -54,6 +78,12 @@ export default function AdminUsersPage() {
         setUsername("");
         setEmail("");
         setPassword("");
+        setCreateServer(true);
+        setServerName("");
+        setTemplateId("");
+        setMemoryMb(1024);
+        setCpuPercent(100);
+        setDiskMb(5120);
         fetchUsers();
       } else {
         alert(data.error?.message || "User creation failed");
@@ -128,8 +158,8 @@ export default function AdminUsersPage() {
         {/* Modal */}
         {showModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-            <div className="bg-zinc-950 border border-zinc-800 rounded-3xl w-full max-w-md p-6 shadow-2xl space-y-4">
-              <h3 className="text-base font-bold text-white">Create System User</h3>
+            <div className="bg-zinc-950 border border-zinc-800 rounded-3xl w-full max-w-lg p-6 shadow-2xl space-y-4">
+              <h3 className="text-base font-bold text-white">Create Account + Server</h3>
               <form onSubmit={handleCreate} className="space-y-4">
                 <div>
                   <label className="block text-xs font-semibold text-zinc-400 mb-1">Username</label>
@@ -172,6 +202,57 @@ export default function AdminUsersPage() {
                     <option value="reseller">RESELLER</option>
                     <option value="admin">ADMIN</option>
                   </select>
+                </div>
+                <div className="border-t border-zinc-800 pt-4 space-y-3">
+                  <label className="flex items-center gap-2 text-xs font-semibold text-white cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={createServer}
+                      onChange={(e) => setCreateServer(e.target.checked)}
+                      className="accent-white"
+                    />
+                    Buat server otomatis untuk akun ini
+                  </label>
+
+                  {createServer && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="md:col-span-2">
+                        <label className="block text-xs font-semibold text-zinc-400 mb-1">Nama Server</label>
+                        <input
+                          type="text"
+                          value={serverName}
+                          onChange={(e) => setServerName(e.target.value)}
+                          placeholder={`${username || "user"}-server`}
+                          className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none"
+                        />
+                      </div>
+                      <div className="md:col-span-2">
+                        <label className="block text-xs font-semibold text-zinc-400 mb-1">Template</label>
+                        <select
+                          value={templateId}
+                          onChange={(e) => setTemplateId(e.target.value)}
+                          className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none"
+                        >
+                          <option value="">Default Node.js</option>
+                          {templates.map((tmpl) => (
+                            <option key={tmpl.id} value={tmpl.id}>{tmpl.name} — {tmpl.category}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-zinc-400 mb-1">RAM (MB)</label>
+                        <input type="number" min={128} value={memoryMb} onChange={(e) => setMemoryMb(Number(e.target.value))} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-zinc-400 mb-1">CPU (%)</label>
+                        <input type="number" min={1} value={cpuPercent} onChange={(e) => setCpuPercent(Number(e.target.value))} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none" />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-zinc-400 mb-1">Disk (MB)</label>
+                        <input type="number" min={256} value={diskMb} onChange={(e) => setDiskMb(Number(e.target.value))} className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs text-white focus:outline-none" />
+                      </div>
+                    </div>
+                  )}
                 </div>
                 <div className="flex justify-end space-x-2 pt-2">
                   <button
