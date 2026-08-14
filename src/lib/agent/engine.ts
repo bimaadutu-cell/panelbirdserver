@@ -30,7 +30,7 @@ interface RuntimeState {
   pid?: number | null;
 }
 
-export const DEFAULT_NODE_STARTUP_COMMAND = 'if [[ -d .git ]] && [[ "{{AUTO_UPDATE}}" == "1" ]]; then git pull; fi; if [[ ! -z "${NODE_PACKAGES}" ]]; then /usr/local/bin/npm install ${NODE_PACKAGES}; fi; if [[ ! -z "${UNNODE_PACKAGES}" ]]; then /usr/local/bin/npm uninstall ${UNNODE_PACKAGES}; fi; if [ -f /home/container/package.json ]; then /usr/local/bin/npm install; fi; /usr/local/bin/node /home/container/${MAIN_FILE}';
+export const DEFAULT_NODE_STARTUP_COMMAND = '/usr/local/bin/node /home/container/${MAIN_FILE}';
 
 function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
@@ -109,6 +109,9 @@ export function getDefaultServerEnv(templateCategory: string, projectRootPath?: 
     UNNODE_PACKAGES: "",
     MAIN_FILE: defaultMainFile,
     NODE_RUNTIME_VERSION: "system",
+    PYTHON_PACKAGES: "",
+    OS_PACKAGES: "",
+    npm_config_include: "dev",
   };
 
   if (/telegram bot/i.test(templateCategory)) {
@@ -505,12 +508,29 @@ export async function startServer(serverId: string): Promise<boolean> {
   if (!runtimeEnv.AUTO_UPDATE) runtimeEnv.AUTO_UPDATE = "0";
   if (!runtimeEnv.NODE_PACKAGES) runtimeEnv.NODE_PACKAGES = "";
   if (!runtimeEnv.UNNODE_PACKAGES) runtimeEnv.UNNODE_PACKAGES = "";
+  if (!runtimeEnv.npm_config_include) runtimeEnv.npm_config_include = "dev";
 
-  const finalStartupCommand = normalizeStartupCommand(
-    server.startupCommand,
+  const rawStartupCommand = (server.startupCommand || DEFAULT_NODE_STARTUP_COMMAND).trim();
+  const normalizedStartupCommand = normalizeStartupCommand(
+    rawStartupCommand,
     runtimeContainerAlias,
     runtimeEnv.NODE_RUNTIME_VERSION
   );
+
+  // Always perform real dependency installation on the host before starting
+  // the uploaded project. This is intentionally not a fake/simulated status:
+  // npm/pip/apt commands execute against the actual Railway runtime filesystem.
+  const hasExplicitNodeInstall = /\bnpm\s+(?:install|ci)\b/.test(rawStartupCommand);
+  const dependencyBootstrap = [
+    'set -e',
+    `if [[ -f package.json ]] && ${hasExplicitNodeInstall ? 'false' : 'true'}; then if ! command -v ${shellQuote(hostBinaries.npm)} >/dev/null 2>&1; then echo '[Birdserver] npm is unavailable on this runtime.'; exit 127; fi; ${hostBinaries.npm} install --no-audit --no-fund --prefer-online; fi`,
+    'if [[ ! -z "${NODE_PACKAGES}" ]]; then ' + hostBinaries.npm + ' install --no-audit --no-fund ${NODE_PACKAGES}; fi',
+    'if [[ ! -z "${UNNODE_PACKAGES}" ]]; then ' + hostBinaries.npm + ' uninstall ${UNNODE_PACKAGES}; fi',
+    `if [[ -f requirements.txt ]]; then if ! command -v python3 >/dev/null 2>&1; then echo '[Birdserver] requirements.txt exists but python3 is unavailable.'; exit 127; fi; python3 -m pip install --no-input -r requirements.txt || python3 -m pip install --no-input --user -r requirements.txt; fi`,
+    'if [[ ! -z "${PYTHON_PACKAGES}" ]]; then if ! command -v python3 >/dev/null 2>&1; then echo "[Birdserver] PYTHON_PACKAGES requested but python3 is unavailable."; exit 127; fi; python3 -m pip install --no-input --user ${PYTHON_PACKAGES} || python3 -m pip install --no-input ${PYTHON_PACKAGES}; fi',
+    'if [[ ! -z "${OS_PACKAGES}" ]]; then if ! command -v apt-get >/dev/null 2>&1 || [[ "$(id -u)" != "0" ]]; then echo "[Birdserver] OS_PACKAGES requested, but apt-get/root access is unavailable on this host."; exit 126; fi; DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${OS_PACKAGES}; fi',
+  ].join('; ');
+  const finalStartupCommand = `${dependencyBootstrap}; ${normalizedStartupCommand}`;
 
   const { inputLogPath, outputLogPath } = getServerConsolePaths(serverId);
   fs.writeFileSync(inputLogPath, "", "utf-8");
@@ -520,14 +540,41 @@ export async function startServer(serverId: string): Promise<boolean> {
     "utf-8"
   );
 
-  const command = `tail -n 0 -F ${shellQuote(inputLogPath)} | ${hostBinaries.bash} -lc ${shellQuote(finalStartupCommand)} >> ${shellQuote(outputLogPath)} 2>&1`;
+  // IMPORTANT: do not keep the console tail process as part of the runtime
+  // process group. The old implementation used `tail -F | bash -lc ...`,
+  // which could keep the server marked RUNNING forever after the bot crashed.
+  // The FIFO feeds live console commands while the actual startup command
+  // remains the lifetime of the tracked PID.
+  const inputPipePath = path.join(getRuntimeDirectory(serverId), "console-input.pipe");
+  try {
+    if (fs.existsSync(inputPipePath)) fs.rmSync(inputPipePath, { force: true });
+  } catch {}
+
+  // A real FIFO keeps console input usable across HTTP requests without
+  // making `tail -F` the tracked server PID. The trap removes the feeder
+  // process and FIFO when the actual bot exits.
+  const command = [
+    `mkfifo -m 600 ${shellQuote(inputPipePath)}`,
+    `trap 'kill "$feeder" 2>/dev/null || true; rm -f ${shellQuote(inputPipePath)}' EXIT TERM INT`,
+    `tail -n 0 -F ${shellQuote(inputLogPath)} > ${shellQuote(inputPipePath)} & feeder=$!`,
+    `${hostBinaries.bash} -lc ${shellQuote(finalStartupCommand)} < ${shellQuote(inputPipePath)} >> ${shellQuote(outputLogPath)} 2>&1`,
+  ].join("; ");
   const child = spawn(hostBinaries.bash, ["-lc", command], {
     cwd: runtimeWorkingDirectory,
     env: runtimeEnv,
     detached: true,
-    stdio: "ignore",
+    stdio: ["ignore", "ignore", "ignore"],
   });
 
+  child.on("exit", (code, signal) => {
+    const exitMessage = `[Birdserver] Runtime exited (code=${code ?? "null"}, signal=${signal ?? "none"}).`;
+    appendConsoleOutput(serverId, exitMessage);
+    writeRuntimeState(serverId, { lastExitAt: new Date().toISOString(), pid: null });
+    void db.update(servers)
+      .set({ status: "stopped", pid: 0, updatedAt: new Date() })
+      .where(eq(servers.id, serverId))
+      .catch((error) => console.warn(`[Birdserver] Exit status sync skipped for ${serverId}:`, error));
+  });
   child.unref();
 
   // Persist runtime state first. The process itself is the source of truth
@@ -552,6 +599,7 @@ export async function startServer(serverId: string): Promise<boolean> {
   }
 
   appendConsoleOutput(serverId, `[Birdserver] Detached runtime started with PID ${runtimePid}`);
+  appendConsoleOutput(serverId, `[Birdserver] Dependency mode: real host runtime (npm/pip/OS packages where available).`);
   return true;
 }
 

@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import { getSessionUser, authenticateApiKey, hashPassword } from "@/lib/auth";
 import { db } from "@/db";
-import { users, resellers } from "@/db/schema";
+import { users } from "@/db/schema";
 import { cryptoRandomString } from "@/lib/utils";
 import { createAuditLog } from "@/lib/audit";
-import { eq } from "drizzle-orm";
+import { eq, or } from "drizzle-orm";
+import { insertCompatibleUser, insertCompatibleReseller } from "@/lib/legacy-db";
+import { ensureDatabaseReady } from "@/db/bootstrap";
 
 async function getAuthSession(req: Request) {
   const authHeader = req.headers.get("authorization");
@@ -17,6 +19,7 @@ async function getAuthSession(req: Request) {
 
 export async function GET(req: Request) {
   try {
+    await ensureDatabaseReady();
     const session = await getAuthSession(req);
     if (!session || session.role !== "admin") {
       return NextResponse.json(
@@ -38,6 +41,7 @@ export async function GET(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    await ensureDatabaseReady();
     const session = await getAuthSession(req);
     if (!session || session.role !== "admin") {
       return NextResponse.json(
@@ -56,21 +60,31 @@ export async function POST(req: Request) {
       );
     }
 
-    const passHash = await hashPassword(password);
-    const userId = "usr_" + cryptoRandomString(12);
+    const duplicate = await db.query.users.findFirst({
+      where: or(eq(users.email, email), eq(users.username, username)),
+    });
+    if (duplicate) {
+      return NextResponse.json(
+        { success: false, error: { code: "USER_EXISTS", message: "Username or email is already registered" } },
+        { status: 409 }
+      );
+    }
 
-    await db.insert(users).values({
-      id: userId,
+    const passHash = await hashPassword(password);
+    const requestedUserId = "usr_" + cryptoRandomString(12);
+    const userId = await insertCompatibleUser({
+      id: requestedUserId,
       email,
       username,
       passwordHash: passHash,
+      password,
       role,
       status: "active",
-      permissions: role === "admin" ? ["*"] : ["server.create", "server.console"],
+      permissions: role === "admin" ? ["*"] : ["server.create", "server.console", "server.files"],
     });
 
     if (role === "reseller") {
-      await db.insert(resellers).values({
+      await insertCompatibleReseller({
         id: "res_" + cryptoRandomString(12),
         userId,
         balance: balance || 100000,

@@ -81,8 +81,9 @@ export function StartupView({
 
       <div>
         <label className="block text-xs font-bold text-white mb-1.5 flex items-center gap-1.5">
-          <Layers className="w-4 h-4 text-white" /> Docker Runtime Image
+          <Layers className="w-4 h-4 text-white" /> Runtime Image / Template
         </label>
+        <p className="text-[10px] text-zinc-500 mb-2">Metadata/template field for the current host runtime. It does not create a Docker container by itself.</p>
         <input
           type="text"
           value={image}
@@ -146,7 +147,7 @@ export function StartupView({
           rows={8}
           value={envStr}
           onChange={(e) => setEnvStr(e.target.value)}
-          placeholder="AUTO_UPDATE=0&#10;NODE_PACKAGES=&#10;UNNODE_PACKAGES=&#10;MAIN_FILE=index.js"
+          placeholder="AUTO_UPDATE=0&#10;NODE_PACKAGES=&#10;UNNODE_PACKAGES=&#10;PYTHON_PACKAGES=&#10;OS_PACKAGES=&#10;MAIN_FILE=index.js"
           className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-3.5 text-xs text-white font-mono focus:outline-none focus:border-zinc-600"
         />
       </div>

@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 import { getRequestSession } from "@/lib/server-access";
 import { db } from "@/db";
-import { users, resellers, servers, templates, nodes, allocations } from "@/db/schema";
+import { users, templates, nodes, allocations } from "@/db/schema";
 import { hashPassword } from "@/lib/auth";
 import { cryptoRandomString, generateServerIdentifier } from "@/lib/utils";
 import { DEFAULT_NODE_STARTUP_COMMAND, getDefaultServerEnv, initializeServerFiles } from "@/lib/agent/engine";
 import { createAuditLog } from "@/lib/audit";
-import { eq } from "drizzle-orm";
+import { eq, or } from "drizzle-orm";
+import { insertCompatibleUser, insertCompatibleServer, insertCompatibleReseller } from "@/lib/legacy-db";
+import { ensureDatabaseReady } from "@/db/bootstrap";
 
 const provisionRequests = new Map<string, unknown>();
 
@@ -76,6 +78,7 @@ export async function OPTIONS(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    await ensureDatabaseReady();
     const session = await getRequestSession(req);
     if (!session || session.role !== "admin") {
       return NextResponse.json(
@@ -111,21 +114,31 @@ export async function POST(req: Request) {
       );
     }
 
-    const userId = "usr_" + cryptoRandomString(12);
-    const passwordHash = await hashPassword(password);
+    const existingUser = await db.query.users.findFirst({
+      where: or(eq(users.email, email), eq(users.username, username)),
+    });
+    if (existingUser) {
+      return NextResponse.json(
+        { success: false, error: { code: "USER_EXISTS", message: "Username or email is already registered" } },
+        { status: 409 }
+      );
+    }
 
-    await db.insert(users).values({
-      id: userId,
+    const requestedUserId = "usr_" + cryptoRandomString(12);
+    const passwordHash = await hashPassword(password);
+    const userId = await insertCompatibleUser({
+      id: requestedUserId,
       username,
       email,
       passwordHash,
+      password,
       role,
       status: "active",
-      permissions: role === "admin" ? ["*"] : ["server.console", "server.files"],
+      permissions: role === "admin" ? ["*"] : ["server.console", "server.files", "server.create"],
     });
 
     if (role === "reseller") {
-      await db.insert(resellers).values({
+      await insertCompatibleReseller({
         id: "res_" + cryptoRandomString(12),
         userId,
         balance: 0,
@@ -171,7 +184,7 @@ export async function POST(req: Request) {
       const serverId = "srv_" + cryptoRandomString(12);
       const identifier = generateServerIdentifier();
 
-      await db.insert(servers).values({
+      const storedServerId = await insertCompatibleServer({
         id: serverId,
         identifier,
         name: serverName || `${username}-server`,
@@ -192,13 +205,13 @@ export async function POST(req: Request) {
       });
 
       if (freeAlloc) {
-        await db.update(allocations).set({ isAssigned: true, serverId }).where(eq(allocations.id, freeAlloc.id));
+        await db.update(allocations).set({ isAssigned: true, serverId: storedServerId }).where(eq(allocations.id, freeAlloc.id));
       }
 
-      initializeServerFiles(serverId, templateCategory);
+      initializeServerFiles(storedServerId, templateCategory);
 
       createdServer = {
-        id: serverId,
+        id: storedServerId,
         identifier,
         name: serverName || `${username}-server`,
         nodeId: targetNodeId,

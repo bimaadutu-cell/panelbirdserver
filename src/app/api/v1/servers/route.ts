@@ -7,8 +7,9 @@ import { initializeServerFiles, getServerMetrics, DEFAULT_NODE_STARTUP_COMMAND, 
 import { createAuditLog } from "@/lib/audit";
 import { dispatchWebhook } from "@/lib/webhooks";
 import { ensureSeedData } from "@/lib/seed";
-import { pool } from "@/db";
+
 import { eq, or, inArray } from "drizzle-orm";
+import { insertCompatibleServer } from "@/lib/legacy-db";
 
 // In-memory Idempotency map
 const processedIdempotencyKeys = new Map<string, any>();
@@ -177,62 +178,42 @@ export async function POST(req: Request) {
     const identifier = generateServerIdentifier();
     const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 
-    const serverColumnsResult = await pool.query<{ column_name: string; udt_name: string | null }>(
-      `select column_name, udt_name from information_schema.columns where table_schema='public' and table_name='servers'`
-    );
-    const serverColumns = new Set(serverColumnsResult.rows.map((row) => row.column_name));
-    const statusUdtName = serverColumnsResult.rows.find((row) => row.column_name === "status")?.udt_name || null;
-    const statusValue = statusUdtName === "server_status" ? "STOPPED" : "stopped";
-
-    const insertFields: string[] = ["id", "name"];
-    const insertValues: unknown[] = [serverId, name];
-    const placeholders = () => insertValues.map((_, index) => `$${index + 1}`).join(", ");
-    const push = (field: string, value: unknown) => {
-      insertFields.push(field);
-      insertValues.push(value);
-    };
-
-    if (serverColumns.has("identifier")) push("identifier", identifier);
-    if (serverColumns.has("user_id")) push("user_id", String(userId));
-    if (serverColumns.has("owner_id")) push("owner_id", String(userId));
-    if (serverColumns.has("reseller_id")) push("reseller_id", null);
-    if (serverColumns.has("node_id")) push("node_id", String(targetNodeId));
-    if (serverColumns.has("allocation_id")) push("allocation_id", freeAlloc ? freeAlloc.id : null);
-    if (serverColumns.has("template_id")) push("template_id", templateId || null);
-    if (serverColumns.has("docker_image")) push("docker_image", finalImage);
-    if (serverColumns.has("startup_command")) push("startup_command", finalStartup);
-    if (serverColumns.has("working_directory")) push("working_directory", "/home/container");
-    if (serverColumns.has("env_vars")) push("env_vars", JSON.stringify(finalEnvVars));
-    if (serverColumns.has("memory_mb")) push("memory_mb", Number(memoryMb));
-    if (serverColumns.has("ram_mb")) push("ram_mb", Number(memoryMb));
-    if (serverColumns.has("cpu_percent")) push("cpu_percent", Number(cpuPercent));
-    if (serverColumns.has("disk_mb")) push("disk_mb", Number(diskMb));
-    if (serverColumns.has("storage_mb")) push("storage_mb", Number(diskMb));
-    if (serverColumns.has("status")) push("status", statusValue);
-    if (serverColumns.has("expires_at")) push("expires_at", expiresAt);
-
-    await pool.query(
-      `insert into servers (${insertFields.join(", ")}) values (${placeholders()})`,
-      insertValues
-    );
-
+    const storedServerId = await insertCompatibleServer({
+      id: serverId,
+      identifier,
+      name,
+      userId: String(userId),
+      resellerId: null,
+      nodeId: String(targetNodeId),
+      allocationId: freeAlloc ? freeAlloc.id : null,
+      templateId: templateId || null,
+      dockerImage: finalImage,
+      startupCommand: finalStartup,
+      workingDirectory: "/home/container",
+      envVars: finalEnvVars,
+      memoryMb: Number(memoryMb),
+      cpuPercent: Number(cpuPercent),
+      diskMb: Number(diskMb),
+      status: "stopped",
+      expiresAt,
+    });
     if (freeAlloc) {
       await db
         .update(allocations)
-        .set({ isAssigned: true, serverId })
+        .set({ isAssigned: true, serverId: storedServerId })
         .where(eq(allocations.id, freeAlloc.id));
     }
 
     // Initialize server files on disk
-    initializeServerFiles(serverId, templateCategory);
+    initializeServerFiles(storedServerId, templateCategory);
 
-    await createAuditLog(session.id, "server.create", { serverId, name, userId });
-    await dispatchWebhook("server.created", { serverId, name, userId });
+    await createAuditLog(session.id, "server.create", { serverId: storedServerId, name, userId });
+    await dispatchWebhook("server.created", { serverId: storedServerId, name, userId });
 
     const responseData = {
       success: true,
       data: {
-        id: serverId,
+        id: storedServerId,
         identifier,
         name,
         userId,
