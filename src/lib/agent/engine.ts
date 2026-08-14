@@ -131,57 +131,151 @@ async function ensureNodeRuntime(serverId: string, version: string): Promise<Run
 
   const runtimeVersion = version.includes(".") ? version : ({
     18: "18.20.8",
-    20: "20.19.4",
-    22: "22.19.0",
+    20: "20.20.2",
+    22: "22.23.2",
     23: "23.11.1",
-    24: "24.7.0",
-    25: "25.0.0",
+    24: "24.18.1",
+    25: "25.9.0",
   } as Record<number, string>)[major] || version;
+
   const arch = getNodeArch();
   const runtimeDir = getNodeRuntimeDir(serverId, runtimeVersion);
   const nodeBin = path.join(runtimeDir, "bin", "node");
   const npmBin = path.join(runtimeDir, "bin", "npm");
   const npxBin = path.join(runtimeDir, "bin", "npx");
 
-  if (!fs.existsSync(nodeBin) || !fs.existsSync(npmBin)) {
-    const baseUrl = `https://nodejs.org/dist/v${runtimeVersion}`;
-    const archive = `node-v${runtimeVersion}-linux-${arch}.tar.xz`;
+  const validateRuntime = () => {
+    if (!fs.existsSync(nodeBin) || !fs.existsSync(npmBin)) return false;
+    try {
+      const actual = execSync(`${shellQuote(nodeBin)} -p process.versions.node`, {
+        encoding: "utf-8",
+        env: { ...process.env, PATH: buildRuntimePath(path.dirname(nodeBin)) },
+      }).trim();
+      return actual === runtimeVersion;
+    } catch {
+      return false;
+    }
+  };
+
+  if (!validateRuntime()) {
     const tmpRoot = path.join(getRuntimeDirectory(serverId), `node-download-${runtimeVersion}-${arch}`);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
     fs.mkdirSync(tmpRoot, { recursive: true });
 
+    // IMPORTANT: always use the official Node.js hostname.
+    const baseUrls = [
+      `https://nodejs.org/dist/v${runtimeVersion}`,
+      `https://nodejs.org/download/release/v${runtimeVersion}`,
+    ];
+    const archiveXz = `node-v${runtimeVersion}-linux-${arch}.tar.xz`;
+    const archiveGz = `node-v${runtimeVersion}-linux-${arch}.tar.gz`;
+
     const download = (url: string, output: string) => {
-      execSync(`curl -fL --retry 3 --retry-delay 1 --connect-timeout 15 --max-time 300 ${shellQuote(url)} -o ${shellQuote(output)}`, {
-        cwd: tmpRoot,
-        env: { ...process.env, PATH: buildRuntimePath(process.env.PATH) },
-        stdio: "inherit",
-      });
+      const env = { ...process.env, PATH: buildRuntimePath(process.env.PATH) };
+      const curl = detectHostBinary("curl", "");
+      const wget = detectHostBinary("wget", "");
+      if (curl) {
+        execSync(
+          `${shellQuote(curl)} --fail --location --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 600 ${shellQuote(url)} --output ${shellQuote(output)}`,
+          { cwd: tmpRoot, env, stdio: "inherit" }
+        );
+        return;
+      }
+      if (wget) {
+        execSync(
+          `${shellQuote(wget)} --https-only --tries=3 --timeout=20 --server-response --output-document=${shellQuote(output)} ${shellQuote(url)}`,
+          { cwd: tmpRoot, env, stdio: "inherit" }
+        );
+        return;
+      }
+      throw new Error("Neither curl nor wget is available to download the selected Node.js runtime.");
     };
 
-    const archivePath = path.join(tmpRoot, archive);
-    const sumsPath = path.join(tmpRoot, "SHASUMS256.txt");
-    download(`${baseUrl}/${archive}`, archivePath);
-    download(`${baseUrl}/SHASUMS256.txt`, sumsPath);
+    let downloadedArchive = "";
+    let lastDownloadError = "";
+    for (const baseUrl of baseUrls) {
+      for (const archive of [archiveXz, archiveGz]) {
+        try {
+          const archivePath = path.join(tmpRoot, archive);
+          download(`${baseUrl}/${archive}`, archivePath);
+          downloadedArchive = archivePath;
+          break;
+        } catch (error) {
+          lastDownloadError = error instanceof Error ? error.message : String(error);
+          fs.rmSync(path.join(tmpRoot, archive), { force: true });
+        }
+      }
+      if (downloadedArchive) break;
+    }
 
-    const expectedLine = fs.readFileSync(sumsPath, "utf-8").split(/\r?\n/).find((line) => line.endsWith(`  ${archive}`));
-    if (!expectedLine) throw new Error(`Node.js ${runtimeVersion} checksum entry was not found.`);
-    const expected = expectedLine.split(/\s+/)[0];
-    const actual = createHash("sha256").update(fs.readFileSync(archivePath)).digest("hex");
-    if (actual !== expected) throw new Error(`Node.js runtime checksum mismatch for ${archive}.`);
+    if (!downloadedArchive) {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      throw new Error(
+        `Unable to download Node.js ${runtimeVersion} from the official Node.js servers. ` +
+        `Check Railway outbound DNS/HTTPS access. Last error: ${lastDownloadError}`
+      );
+    }
+
+    const sumsPath = path.join(tmpRoot, "SHASUMS256.txt");
+    let sumsDownloaded = false;
+    for (const baseUrl of baseUrls) {
+      try {
+        download(`${baseUrl}/SHASUMS256.txt`, sumsPath);
+        sumsDownloaded = true;
+        break;
+      } catch {
+        fs.rmSync(sumsPath, { force: true });
+      }
+    }
+    if (!sumsDownloaded) {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      throw new Error(`Downloaded Node.js ${runtimeVersion}, but could not download its official SHASUMS256.txt.`);
+    }
+
+    const archiveName = path.basename(downloadedArchive);
+    const expectedLine = fs.readFileSync(sumsPath, "utf-8")
+      .split(/\r?\n/)
+      .find((line) => line.trim().endsWith(`  ${archiveName}`) || line.trim().endsWith(` *${archiveName}`));
+
+    if (!expectedLine) {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      throw new Error(`Official checksum entry for ${archiveName} was not found.`);
+    }
+
+    const expected = expectedLine.trim().split(/\s+/)[0];
+    const actual = createHash("sha256").update(fs.readFileSync(downloadedArchive)).digest("hex");
+    if (actual !== expected) {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      throw new Error(`Node.js runtime checksum mismatch for ${archiveName}.`);
+    }
 
     fs.rmSync(runtimeDir, { recursive: true, force: true });
     fs.mkdirSync(path.dirname(runtimeDir), { recursive: true });
-    execSync(`tar -xJf ${shellQuote(archivePath)} -C ${shellQuote(tmpRoot)}`);
+
+    const tarArgs = downloadedArchive.endsWith(".tar.xz")
+      ? `-xJf ${shellQuote(downloadedArchive)}`
+      : `-xzf ${shellQuote(downloadedArchive)}`;
+    execSync(`tar ${tarArgs} -C ${shellQuote(tmpRoot)}`, { cwd: tmpRoot, stdio: "inherit" });
+
     const extracted = path.join(tmpRoot, `node-v${runtimeVersion}-linux-${arch}`);
+    if (!fs.existsSync(extracted)) {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+      throw new Error(`Node.js archive extracted successfully, but expected directory was missing.`);
+    }
+
     fs.renameSync(extracted, runtimeDir);
     fs.rmSync(tmpRoot, { recursive: true, force: true });
   }
 
-  if (!fs.existsSync(nodeBin) || !fs.existsSync(npmBin)) {
-    throw new Error(`Node.js ${runtimeVersion} runtime was downloaded but its node/npm binaries are missing.`);
+  if (!validateRuntime()) {
+    throw new Error(`Node.js ${runtimeVersion} runtime is present but failed its version validation.`);
   }
 
-  const actualVersion = execSync(`${shellQuote(nodeBin)} -p process.versions.node`, { encoding: "utf-8" }).trim();
+  const actualVersion = execSync(`${shellQuote(nodeBin)} -p process.versions.node`, {
+    encoding: "utf-8",
+    env: { ...process.env, PATH: buildRuntimePath(path.dirname(nodeBin)) },
+  }).trim();
+
   return { node: nodeBin, npm: npmBin, npx: npxBin, binDir: path.dirname(nodeBin), version: actualVersion };
 }
 
@@ -223,7 +317,7 @@ export function getDefaultServerEnv(templateCategory: string, projectRootPath?: 
   if (/telegram bot/i.test(templateCategory)) {
     return {
       ...baseEnv,
-      NODE_RUNTIME_VERSION: "23",
+      NODE_RUNTIME_VERSION: "22",
       BOT_TOKEN: "",
     };
   }
@@ -231,7 +325,7 @@ export function getDefaultServerEnv(templateCategory: string, projectRootPath?: 
   if (/whatsapp bot/i.test(templateCategory)) {
     return {
       ...baseEnv,
-      NODE_RUNTIME_VERSION: "23",
+      NODE_RUNTIME_VERSION: "22",
       SESSION_NAME: "birdserver-wa-session",
     };
   }

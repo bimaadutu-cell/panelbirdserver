@@ -51,3 +51,11 @@ Supported examples:
 If the value is `system`, Birdserver uses the host Node. If the value is `system` but the server image is `node:23-*`, the image major is used as the runtime selection. Telegram and WhatsApp templates default to Node 23.
 
 The panel still does not create Docker containers or kernel-level CPU/RAM isolation on Railway. The runtime manager provides a real per-server Node runtime and real dependency installation on the persistent host filesystem.
+
+
+### V8 runtime fix
+- Runtime downloads use only official `nodejs.org` URLs; `nodes.org` is never generated.
+- `curl` is preferred and `wget` is a fallback.
+- Node 22 is the default for Telegram/WhatsApp templates because Node 23 is upstream EOL; Node 23.11.1 remains available when explicitly selected.
+- Downloaded archives are checked against the official `SHASUMS256.txt` before extraction.
+- The extracted `node` binary is version-validated before dependency installation or bot startup.
