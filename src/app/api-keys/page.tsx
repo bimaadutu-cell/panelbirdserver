@@ -28,6 +28,7 @@ export default function ApiKeysPage() {
       if (keysData.success) setKeys(keysData.data || []);
     } catch (err) {
       console.error(err);
+      alert(err instanceof Error ? err.message : "Gagal memuat API Key");
     } finally {
       setLoading(false);
     }
@@ -57,8 +58,8 @@ export default function ApiKeysPage() {
       } else {
         alert(data.error?.message || "Failed to create API Key");
       }
-    } catch {
-      alert("Failed to create API Key");
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Failed to create API Key");
     } finally {
       setCreating(false);
     }

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getRequestSession } from "@/lib/server-access";
+import { ensureSeedData } from "@/lib/seed";
 import { db } from "@/db";
 import { users, resellers, servers, templates, nodes, allocations } from "@/db/schema";
 import { hashPassword } from "@/lib/auth";
@@ -77,6 +78,9 @@ export async function OPTIONS(req: Request) {
 
 export async function POST(req: Request) {
   try {
+    // Provisioning must work from a clean Railway database too.
+    // Seed only the application prerequisites; this is idempotent.
+    await ensureSeedData();
     const session = await getRequestSession(req);
     if (!session || session.role !== "admin") {
       return NextResponse.json(
@@ -173,9 +177,43 @@ export async function POST(req: Request) {
         where: (a, { and, eq }) => and(eq(a.nodeId, targetNodeId!), eq(a.isAssigned, false)),
       }) || null;
 
+      // If the node exists but has no free allocation, create a safe automatic
+      // allocation instead of forcing the admin to configure a port manually.
+      if (!freeAlloc) {
+        const node = await db.query.nodes.findFirst({ where: eq(nodes.id, targetNodeId!) });
+        if (!node) {
+          return NextResponse.json(
+            { success: false, error: { code: "NODE_UNAVAILABLE", message: "Node tidak ditemukan." } },
+            { status: 400 }
+          );
+        }
+
+        const usedPorts = await db.select({ port: allocations.port }).from(allocations).where(eq(allocations.nodeId, targetNodeId!));
+        const used = new Set(usedPorts.map((row) => Number(row.port)));
+        let port = 30000;
+        while (used.has(port) && port < 60000) port += 1;
+        if (port >= 60000) {
+          return NextResponse.json(
+            { success: false, error: { code: "NO_PORT_AVAILABLE", message: "Tidak ada port kosong yang dapat dibuat otomatis pada node ini." } },
+            { status: 409 }
+          );
+        }
+
+        const allocId = "alloc_" + cryptoRandomString(8);
+        const inserted = await db.insert(allocations).values({
+          id: allocId,
+          nodeId: targetNodeId!,
+          ip: node.fqdnIp || "127.0.0.1",
+          port,
+          alias: `${username}-${port}`,
+          isAssigned: false,
+        }).returning();
+        freeAlloc = inserted[0] || null;
+      }
+
       if (!freeAlloc) {
         return NextResponse.json(
-          { success: false, error: { code: "NO_ALLOCATION_AVAILABLE", message: "Tidak ada allocation/port kosong pada node yang dipilih." } },
+          { success: false, error: { code: "NO_ALLOCATION_AVAILABLE", message: "Allocation otomatis gagal dibuat." } },
           { status: 409 }
         );
       }
@@ -185,9 +223,20 @@ export async function POST(req: Request) {
       ? body.serverName.trim()
       : `${username}-server`;
 
-    const memoryMb = Math.max(128, Math.floor(Number(body.memoryMb ?? 1024)));
-    const cpuPercent = Math.max(1, Math.floor(Number(body.cpuPercent ?? 100)));
-    const diskMb = Math.max(256, Math.floor(Number(body.diskMb ?? 5120)));
+    const rawMemoryMb = Number(body.memoryMb ?? 1024);
+    const rawCpuPercent = Number(body.cpuPercent ?? 100);
+    const rawDiskMb = Number(body.diskMb ?? 5120);
+
+    if (![rawMemoryMb, rawCpuPercent, rawDiskMb].every((value) => Number.isFinite(value) && value > 0)) {
+      return NextResponse.json(
+        { success: false, error: { code: "INVALID_RESOURCES", message: "memoryMb, cpuPercent, dan diskMb harus berupa angka positif yang valid." } },
+        { status: 400 }
+      );
+    }
+
+    const memoryMb = Math.max(128, Math.floor(rawMemoryMb));
+    const cpuPercent = Math.max(1, Math.floor(rawCpuPercent));
+    const diskMb = Math.max(256, Math.floor(rawDiskMb));
 
     if (![memoryMb, cpuPercent, diskMb].every(Number.isFinite)) {
       return NextResponse.json(
