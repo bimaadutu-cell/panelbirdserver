@@ -143,7 +143,7 @@ export async function POST(req: Request) {
     }
 
     // Select template / default specs
-    let finalImage = dockerImage || "node:20-alpine";
+    let finalImage = dockerImage || "node:23-alpine";
     let finalStartup = startupCommand || DEFAULT_NODE_STARTUP_COMMAND;
     let templateCategory = "Node.js";
     let finalEnvVars: Record<string, string> = { ...envVars };

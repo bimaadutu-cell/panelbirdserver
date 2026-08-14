@@ -34,3 +34,20 @@ API-key creation remains compatible with legacy integer `api_keys.id` columns an
 ## Important Railway limitation
 
 This is a real host runtime, not a Docker simulation. The `dockerImage` field is still a template/metadata field; it does not create a Docker container by itself. For true Pterodactyl-style isolation, CPU/RAM/disk enforcement, and separate VPS nodes, deploy a dedicated node/agent with Docker/containerd and have the panel communicate with that node. This build is intended for real execution directly on the persistent Railway Node.js host.
+
+## Node runtime manager (V7 runtime fix)
+
+`dockerImage` is no longer treated as a cosmetic label for Node servers. When a server selects `node:23-*` (or sets `NODE_RUNTIME_VERSION=23`), Birdserver downloads the matching official Node.js Linux runtime into that server's `.birdserver-runtime` cache, verifies the SHA-256 checksum from Node.js `SHASUMS256.txt`, and uses that runtime's own `node`, `npm`, and `npx` for both dependency installation and startup.
+
+This is important for packages such as Baileys that execute an `engine-requirements.js` check during `npm install`: the package install scripts now run under the selected Node runtime instead of the Railway panel's host Node version.
+
+Supported examples:
+- `NODE_RUNTIME_VERSION=23`
+- `NODE_RUNTIME_VERSION=22`
+- `NODE_RUNTIME_VERSION=20`
+- `NODE_RUNTIME_VERSION=23.11.1`
+- `NODE_RUNTIME_VERSION=system`
+
+If the value is `system`, Birdserver uses the host Node. If the value is `system` but the server image is `node:23-*`, the image major is used as the runtime selection. Telegram and WhatsApp templates default to Node 23.
+
+The panel still does not create Docker containers or kernel-level CPU/RAM isolation on Railway. The runtime manager provides a real per-server Node runtime and real dependency installation on the persistent host filesystem.

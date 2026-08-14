@@ -1,6 +1,7 @@
 import fs from "fs";
 import path from "path";
 import { spawn, execSync } from "child_process";
+import { createHash } from "crypto";
 import AdmZip from "adm-zip";
 import { db } from "@/db";
 import { servers, backups, templates } from "@/db/schema";
@@ -30,7 +31,7 @@ interface RuntimeState {
   pid?: number | null;
 }
 
-export const DEFAULT_NODE_STARTUP_COMMAND = '/usr/local/bin/node /home/container/${MAIN_FILE}';
+export const DEFAULT_NODE_STARTUP_COMMAND = 'node /home/container/${MAIN_FILE}';
 
 function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
@@ -79,6 +80,111 @@ const hostBinaries = {
   bash: detectHostBinary("bash", "/bin/bash"),
 };
 
+interface RuntimeBinaries {
+  node: string;
+  npm: string;
+  npx: string;
+  binDir: string;
+  version: string;
+}
+
+function inferNodeVersionFromImage(image?: string | null) {
+  const match = String(image || "").match(/(?:^|\/)node[:\-]?(\d+)(?:[.\d]*)?/i);
+  return match?.[1] || "";
+}
+
+function normalizeNodeVersion(value?: string | null, image?: string | null, category?: string) {
+  const explicit = String(value || "").trim().toLowerCase().replace(/^v/, "");
+  if (explicit && explicit !== "system" && /^\d+(?:\.\d+){0,2}$/.test(explicit)) return explicit;
+  const imageVersion = inferNodeVersionFromImage(image);
+  if (imageVersion) return imageVersion;
+  if (/telegram|whatsapp|node/i.test(category || "")) return "23";
+  return "system";
+}
+
+function getNodeArch() {
+  const arch = execSync("uname -m", { encoding: "utf-8" }).trim();
+  if (arch === "x86_64" || arch === "amd64") return "x64";
+  if (arch === "aarch64" || arch === "arm64") return "arm64";
+  throw new Error(`Unsupported Linux architecture: ${arch}`);
+}
+
+function getNodeRuntimeDir(serverId: string, version: string) {
+  return getSecurePath(serverId, `.birdserver-runtime/node-v${version}`);
+}
+
+async function ensureNodeRuntime(serverId: string, version: string): Promise<RuntimeBinaries> {
+  if (version === "system") {
+    return {
+      node: hostBinaries.node,
+      npm: hostBinaries.npm,
+      npx: hostBinaries.npx,
+      binDir: path.dirname(hostBinaries.node),
+      version: execSync(`${shellQuote(hostBinaries.node)} -p process.versions.node`, { encoding: "utf-8" }).trim(),
+    };
+  }
+
+  const major = Number(version.split(".")[0]);
+  if (!Number.isInteger(major) || major < 18 || major > 25) {
+    throw new Error(`Unsupported Node.js runtime version: ${version}. Use system or a Node.js major from 18 to 25.`);
+  }
+
+  const runtimeVersion = version.includes(".") ? version : ({
+    18: "18.20.8",
+    20: "20.19.4",
+    22: "22.19.0",
+    23: "23.11.1",
+    24: "24.7.0",
+    25: "25.0.0",
+  } as Record<number, string>)[major] || version;
+  const arch = getNodeArch();
+  const runtimeDir = getNodeRuntimeDir(serverId, runtimeVersion);
+  const nodeBin = path.join(runtimeDir, "bin", "node");
+  const npmBin = path.join(runtimeDir, "bin", "npm");
+  const npxBin = path.join(runtimeDir, "bin", "npx");
+
+  if (!fs.existsSync(nodeBin) || !fs.existsSync(npmBin)) {
+    const baseUrl = `https://nodejs.org/dist/v${runtimeVersion}`;
+    const archive = `node-v${runtimeVersion}-linux-${arch}.tar.xz`;
+    const tmpRoot = path.join(getRuntimeDirectory(serverId), `node-download-${runtimeVersion}-${arch}`);
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+    fs.mkdirSync(tmpRoot, { recursive: true });
+
+    const download = (url: string, output: string) => {
+      execSync(`curl -fL --retry 3 --retry-delay 1 --connect-timeout 15 --max-time 300 ${shellQuote(url)} -o ${shellQuote(output)}`, {
+        cwd: tmpRoot,
+        env: { ...process.env, PATH: buildRuntimePath(process.env.PATH) },
+        stdio: "inherit",
+      });
+    };
+
+    const archivePath = path.join(tmpRoot, archive);
+    const sumsPath = path.join(tmpRoot, "SHASUMS256.txt");
+    download(`${baseUrl}/${archive}`, archivePath);
+    download(`${baseUrl}/SHASUMS256.txt`, sumsPath);
+
+    const expectedLine = fs.readFileSync(sumsPath, "utf-8").split(/\r?\n/).find((line) => line.endsWith(`  ${archive}`));
+    if (!expectedLine) throw new Error(`Node.js ${runtimeVersion} checksum entry was not found.`);
+    const expected = expectedLine.split(/\s+/)[0];
+    const actual = createHash("sha256").update(fs.readFileSync(archivePath)).digest("hex");
+    if (actual !== expected) throw new Error(`Node.js runtime checksum mismatch for ${archive}.`);
+
+    fs.rmSync(runtimeDir, { recursive: true, force: true });
+    fs.mkdirSync(path.dirname(runtimeDir), { recursive: true });
+    execSync(`tar -xJf ${shellQuote(archivePath)} -C ${shellQuote(tmpRoot)}`);
+    const extracted = path.join(tmpRoot, `node-v${runtimeVersion}-linux-${arch}`);
+    fs.renameSync(extracted, runtimeDir);
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+
+  if (!fs.existsSync(nodeBin) || !fs.existsSync(npmBin)) {
+    throw new Error(`Node.js ${runtimeVersion} runtime was downloaded but its node/npm binaries are missing.`);
+  }
+
+  const actualVersion = execSync(`${shellQuote(nodeBin)} -p process.versions.node`, { encoding: "utf-8" }).trim();
+  return { node: nodeBin, npm: npmBin, npx: npxBin, binDir: path.dirname(nodeBin), version: actualVersion };
+}
+
 function detectMainFile(serverRoot: string) {
   const candidates = ["index.js", "app.js", "server.js", "main.js", "dist/index.js", "src/index.js"];
 
@@ -117,6 +223,7 @@ export function getDefaultServerEnv(templateCategory: string, projectRootPath?: 
   if (/telegram bot/i.test(templateCategory)) {
     return {
       ...baseEnv,
+      NODE_RUNTIME_VERSION: "23",
       BOT_TOKEN: "",
     };
   }
@@ -124,6 +231,7 @@ export function getDefaultServerEnv(templateCategory: string, projectRootPath?: 
   if (/whatsapp bot/i.test(templateCategory)) {
     return {
       ...baseEnv,
+      NODE_RUNTIME_VERSION: "23",
       SESSION_NAME: "birdserver-wa-session",
     };
   }
@@ -131,28 +239,13 @@ export function getDefaultServerEnv(templateCategory: string, projectRootPath?: 
   return baseEnv;
 }
 
-function resolveNodeExecutable(runtimeVersion?: string | null) {
-  const normalized = (runtimeVersion || "system").trim().toLowerCase();
-  if (!normalized || normalized === "system") {
-    return hostBinaries.node;
-  }
-
-  const version = normalized.replace(/^v/, "");
-  if (/^\d+$/.test(version)) {
-    return `${hostBinaries.npx} -y node@${version}`;
-  }
-
-  return hostBinaries.node;
-}
-
-function normalizeStartupCommand(rawCommand: string, projectRootPath: string, runtimeVersion?: string | null) {
-  const nodeExecutable = resolveNodeExecutable(runtimeVersion);
+function normalizeStartupCommand(rawCommand: string, projectRootPath: string, runtime: RuntimeBinaries) {
   return rawCommand
     .replaceAll("/home/container", projectRootPath)
-    .replaceAll("/usr/local/bin/node", nodeExecutable)
-    .replaceAll("/usr/bin/node", nodeExecutable)
-    .replaceAll("/usr/local/bin/npm", hostBinaries.npm)
-    .replaceAll("/usr/bin/npm", hostBinaries.npm)
+    .replaceAll("/usr/local/bin/node", runtime.node)
+    .replaceAll("/usr/bin/node", runtime.node)
+    .replaceAll("/usr/local/bin/npm", runtime.npm)
+    .replaceAll("/usr/bin/npm", runtime.npm)
     .replace(/\{\{\s*([A-Z0-9_]+)\s*\}\}/g, "${$1}");
 }
 
@@ -492,16 +585,23 @@ export async function startServer(serverId: string): Promise<boolean> {
   const runtimeWorkingDirectory = resolveRuntimeWorkingDirectory(serverRoot, server.workingDirectory);
   const runtimeContainerAlias = prepareRuntimeContainerAlias(serverId, runtimeWorkingDirectory);
 
-  const runtimeEnv: NodeJS.ProcessEnv = {
-    ...process.env,
+  const initialEnv = {
     ...getDefaultServerEnv(templateCategory, runtimeWorkingDirectory),
     ...((server.envVars as Record<string, string>) || {}),
+  };
+  const selectedNodeVersion = normalizeNodeVersion(initialEnv.NODE_RUNTIME_VERSION, server.dockerImage, templateCategory);
+  const runtime = await ensureNodeRuntime(serverId, selectedNodeVersion);
+
+  const runtimeEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    ...initialEnv,
     SERVER_ID: server.id,
     BIRDSERVER: "V1",
     NODE_ENV: process.env.NODE_ENV || "production",
     PWD: runtimeWorkingDirectory,
     HOME: serverRoot,
-    PATH: buildRuntimePath(process.env.PATH),
+    PATH: [runtime.binDir, buildRuntimePath(process.env.PATH)].filter(Boolean).join(":"),
+    NODE_RUNTIME_VERSION: selectedNodeVersion,
   };
 
   if (!runtimeEnv.MAIN_FILE) runtimeEnv.MAIN_FILE = detectMainFile(runtimeWorkingDirectory);
@@ -511,11 +611,7 @@ export async function startServer(serverId: string): Promise<boolean> {
   if (!runtimeEnv.npm_config_include) runtimeEnv.npm_config_include = "dev";
 
   const rawStartupCommand = (server.startupCommand || DEFAULT_NODE_STARTUP_COMMAND).trim();
-  const normalizedStartupCommand = normalizeStartupCommand(
-    rawStartupCommand,
-    runtimeContainerAlias,
-    runtimeEnv.NODE_RUNTIME_VERSION
-  );
+  const normalizedStartupCommand = normalizeStartupCommand(rawStartupCommand, runtimeContainerAlias, runtime);
 
   // Always perform real dependency installation on the host before starting
   // the uploaded project. This is intentionally not a fake/simulated status:
@@ -523,9 +619,10 @@ export async function startServer(serverId: string): Promise<boolean> {
   const hasExplicitNodeInstall = /\bnpm\s+(?:install|ci)\b/.test(rawStartupCommand);
   const dependencyBootstrap = [
     'set -e',
-    `if [[ -f package.json ]] && ${hasExplicitNodeInstall ? 'false' : 'true'}; then if ! command -v ${shellQuote(hostBinaries.npm)} >/dev/null 2>&1; then echo '[Birdserver] npm is unavailable on this runtime.'; exit 127; fi; ${hostBinaries.npm} install --no-audit --no-fund --prefer-online; fi`,
-    'if [[ ! -z "${NODE_PACKAGES}" ]]; then ' + hostBinaries.npm + ' install --no-audit --no-fund ${NODE_PACKAGES}; fi',
-    'if [[ ! -z "${UNNODE_PACKAGES}" ]]; then ' + hostBinaries.npm + ' uninstall ${UNNODE_PACKAGES}; fi',
+    `echo '[Birdserver] Node runtime: ${runtime.version} (selected=${selectedNodeVersion})'`,
+    `if [[ -f package.json ]] && ${hasExplicitNodeInstall ? 'false' : 'true'}; then if ! command -v ${shellQuote(runtime.npm)} >/dev/null 2>&1; then echo '[Birdserver] npm is unavailable for the selected Node runtime.'; exit 127; fi; ${shellQuote(runtime.npm)} install --no-audit --no-fund --prefer-online; fi`,
+    'if [[ ! -z "${NODE_PACKAGES}" ]]; then ' + shellQuote(runtime.npm) + ' install --no-audit --no-fund ${NODE_PACKAGES}; fi',
+    'if [[ ! -z "${UNNODE_PACKAGES}" ]]; then ' + shellQuote(runtime.npm) + ' uninstall ${UNNODE_PACKAGES}; fi',
     `if [[ -f requirements.txt ]]; then if ! command -v python3 >/dev/null 2>&1; then echo '[Birdserver] requirements.txt exists but python3 is unavailable.'; exit 127; fi; python3 -m pip install --no-input -r requirements.txt || python3 -m pip install --no-input --user -r requirements.txt; fi`,
     'if [[ ! -z "${PYTHON_PACKAGES}" ]]; then if ! command -v python3 >/dev/null 2>&1; then echo "[Birdserver] PYTHON_PACKAGES requested but python3 is unavailable."; exit 127; fi; python3 -m pip install --no-input --user ${PYTHON_PACKAGES} || python3 -m pip install --no-input ${PYTHON_PACKAGES}; fi',
     'if [[ ! -z "${OS_PACKAGES}" ]]; then if ! command -v apt-get >/dev/null 2>&1 || [[ "$(id -u)" != "0" ]]; then echo "[Birdserver] OS_PACKAGES requested, but apt-get/root access is unavailable on this host."; exit 126; fi; DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${OS_PACKAGES}; fi',

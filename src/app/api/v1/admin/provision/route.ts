@@ -162,7 +162,7 @@ export async function POST(req: Request) {
         targetNodeId = availableNode.id;
       }
 
-      let finalImage = "node:20-alpine";
+      let finalImage = "node:23-alpine";
       let finalStartup = DEFAULT_NODE_STARTUP_COMMAND;
       let templateCategory = "Node.js";
       let finalEnvVars = getDefaultServerEnv("Node.js");

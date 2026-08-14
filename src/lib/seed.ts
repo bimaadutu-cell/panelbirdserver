@@ -172,7 +172,7 @@ async function ensureDemoServerCompat() {
   if (columns.has("node_id")) push("node_id", "node_01");
   if (columns.has("allocation_id")) push("allocation_id", "alloc_25565");
   if (columns.has("template_id")) push("template_id", "egg_nodejs");
-  if (columns.has("docker_image")) push("docker_image", "node:20-alpine");
+  if (columns.has("docker_image")) push("docker_image", "node:23-alpine");
   if (columns.has("startup_command")) push("startup_command", DEFAULT_NODE_STARTUP_COMMAND);
   if (columns.has("working_directory")) push("working_directory", "/home/container");
   if (columns.has("env_vars")) push("env_vars", JSON.stringify(getDefaultServerEnv("Node.js")));
@@ -241,9 +241,9 @@ export async function ensureSeedData() {
 
     const nodeEggId = "egg_nodejs";
     await db.insert(templates).values([
-      { id: nodeEggId, name: "Node.js Application", category: "Node.js", dockerImage: "node:20-alpine", startupCmd: DEFAULT_NODE_STARTUP_COMMAND, description: "Standard Node.js runtime environment with Pterodactyl-style startup variables", defaultEnv: { ...getDefaultServerEnv("Node.js"), NODE_ENV: "production" } },
-      { id: "egg_telegram", name: "Telegram Bot (Node.js)", category: "Telegram Bot", dockerImage: "node:20-alpine", startupCmd: DEFAULT_NODE_STARTUP_COMMAND, description: "Pre-configured environment for Telegram bots with real grammy runtime support", defaultEnv: { ...getDefaultServerEnv("Telegram Bot"), BOT_TOKEN: "" } },
-      { id: "egg_whatsapp", name: "WhatsApp Bot (Baileys / WhatsApp-Web)", category: "WhatsApp Bot", dockerImage: "node:20-alpine", startupCmd: DEFAULT_NODE_STARTUP_COMMAND, description: "WhatsApp Bot environment with terminal QR output and persistent auth session folder", defaultEnv: { ...getDefaultServerEnv("WhatsApp Bot"), SESSION_NAME: "birdserver-wa-session" } },
+      { id: nodeEggId, name: "Node.js Application", category: "Node.js", dockerImage: "node:23-alpine", startupCmd: DEFAULT_NODE_STARTUP_COMMAND, description: "Standard Node.js runtime environment with Pterodactyl-style startup variables", defaultEnv: { ...getDefaultServerEnv("Node.js"), NODE_ENV: "production" } },
+      { id: "egg_telegram", name: "Telegram Bot (Node.js)", category: "Telegram Bot", dockerImage: "node:23-alpine", startupCmd: DEFAULT_NODE_STARTUP_COMMAND, description: "Pre-configured environment for Telegram bots with real grammy runtime support", defaultEnv: { ...getDefaultServerEnv("Telegram Bot"), BOT_TOKEN: "" } },
+      { id: "egg_whatsapp", name: "WhatsApp Bot (Baileys / WhatsApp-Web)", category: "WhatsApp Bot", dockerImage: "node:23-alpine", startupCmd: DEFAULT_NODE_STARTUP_COMMAND, description: "WhatsApp Bot environment with terminal QR output and persistent auth session folder", defaultEnv: { ...getDefaultServerEnv("WhatsApp Bot"), SESSION_NAME: "birdserver-wa-session" } },
       { id: "egg_python", name: "Python Application", category: "Python", dockerImage: "python:3.11-alpine", startupCmd: "python main.py", description: "Python 3.11 execution runtime for FastAPI, Flask, and scripts", defaultEnv: { PYTHONUNBUFFERED: "1" } },
       { id: "egg_generic", name: "Generic Shell Application", category: "Generic Application", dockerImage: "alpine:latest", startupCmd: "sh run.sh", description: "Lightweight shell script executor", defaultEnv: { RUN_ENV: "production" } },
     ]).onConflictDoNothing();
