@@ -101,7 +101,9 @@ export default function ServerDetailPage({
       if (cancelled) return;
       await fetchServerDetails();
       if (!cancelled) {
-        timer = setTimeout(poll, 1500);
+        // Metrics have their own 2s endpoint; keep the heavier full-detail
+        // database request slower so npm install cannot overload the panel.
+        timer = setTimeout(poll, 3000);
       }
     };
 
@@ -207,10 +209,12 @@ export default function ServerDetailPage({
                   className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase ${
                     server.status === "running"
                       ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
-                      : "bg-zinc-800 text-zinc-400 border border-zinc-700"
+                      : ["starting", "installing"].includes(server.status)
+                        ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                        : "bg-zinc-800 text-zinc-400 border border-zinc-700"
                   }`}
                 >
-                  {server.status}
+                  {server.status === "starting" ? "installing" : server.status}
                 </span>
               </div>
               <h1 className="text-2xl font-black text-white mt-1">{server.name}</h1>

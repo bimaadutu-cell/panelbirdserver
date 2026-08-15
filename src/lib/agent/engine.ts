@@ -45,37 +45,60 @@ function refreshProcessMetrics(serverId: string, pid: number) {
   if (current.pid === pid && (current.pending || Date.now() - current.refreshedAt < PROCESS_METRICS_TTL_MS)) return current;
 
   processMetricsCache.set(serverId, { ...current, pid, pending: true });
-  // Include child processes (pgid / descendant pids) for accurate CPU/RAM tracking
-  execFile("bash", ["-c", `ps -o pid= --ppid ${pid} 2>/dev/null; echo ${pid}`], { timeout: 2_000 }, (_err, pidsOut) => {
-    const targetPids = Array.from(new Set(String(pidsOut).split(/\s+/).map((s) => s.trim()).filter(Boolean))).join(",");
-    if (!targetPids) {
-      processMetricsCache.set(serverId, { pid, memoryBytes: current.memoryBytes, cpuPercent: current.cpuPercent, refreshedAt: Date.now(), pending: false });
-      return;
-    }
 
-    execFile("ps", ["-o", "pid=,rss=,%cpu=", "-p", targetPids], { timeout: 2_000 }, (error, stdout) => {
-      let memoryBytes = 0;
-      let cpuPercent = 0;
-
-      if (!error) {
-        for (const line of String(stdout).split("\n").map((s) => s.trim()).filter(Boolean)) {
-          const parts = line.split(/\s+/);
-          const rssStr = parts[1];
-          const cpuStr = parts[2];
-          if (rssStr && cpuStr) {
-            memoryBytes += Number(rssStr || 0) * 1024;
-            cpuPercent += Number(cpuStr || 0);
-          }
-        }
-      }
-
+  // Read one process table and walk the complete descendant tree. npm normally
+  // starts a shell which starts another shell and only then the actual bot; the
+  // old implementation counted direct children only and reported misleading
+  // RAM/CPU values (including a hard-coded 3% minimum).
+  execFile("ps", ["-eo", "pid=,ppid=,rss=,%cpu="], { timeout: 2_000 }, (error, stdout) => {
+    if (error) {
       processMetricsCache.set(serverId, {
+        ...current,
         pid,
-        memoryBytes: Number.isFinite(memoryBytes) ? memoryBytes : current.memoryBytes,
-        cpuPercent: Number.isFinite(cpuPercent) ? Math.max(cpuPercent > 0 ? Math.round(cpuPercent) : 3, 3) : current.cpuPercent,
         refreshedAt: Date.now(),
         pending: false,
       });
+      return;
+    }
+
+    const rows = String(stdout)
+      .split(/\r?\n/)
+      .map((line) => line.trim().split(/\s+/))
+      .filter((parts) => parts.length >= 4)
+      .map((parts) => ({
+        pid: Number(parts[0]),
+        ppid: Number(parts[1]),
+        rssKb: Number(parts[2]),
+        cpu: Number(parts[3]),
+      }))
+      .filter((row) => Number.isInteger(row.pid) && Number.isInteger(row.ppid));
+
+    const targetPids = new Set<number>([pid]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const row of rows) {
+        if (targetPids.has(row.ppid) && !targetPids.has(row.pid)) {
+          targetPids.add(row.pid);
+          changed = true;
+        }
+      }
+    }
+
+    let memoryBytes = 0;
+    let cpuPercent = 0;
+    for (const row of rows) {
+      if (!targetPids.has(row.pid)) continue;
+      if (Number.isFinite(row.rssKb) && row.rssKb >= 0) memoryBytes += row.rssKb * 1024;
+      if (Number.isFinite(row.cpu) && row.cpu >= 0) cpuPercent += row.cpu;
+    }
+
+    processMetricsCache.set(serverId, {
+      pid,
+      memoryBytes: Number.isFinite(memoryBytes) ? memoryBytes : current.memoryBytes,
+      cpuPercent: Number.isFinite(cpuPercent) ? Math.max(0, Math.round(cpuPercent * 10) / 10) : current.cpuPercent,
+      refreshedAt: Date.now(),
+      pending: false,
     });
   });
 
@@ -575,19 +598,22 @@ function appendConsoleOutput(serverId: string, line: string) {
 function isPidAlive(pid: number | null | undefined) {
   if (!pid || pid <= 0) return false;
 
+  // Check the process table first so a zombie wrapper is not mistaken for a
+  // live runtime. This prevents stale RUNNING state after npm or the bot exits.
   try {
-    process.kill(pid, 0);
-    return true;
-  } catch {}
-
-  // Some hosted Linux environments can reject process.kill(pid, 0) even
-  // though the process is visible to the same container. Fall back to ps.
-  try {
-    const output = execSync(`ps -p ${Math.trunc(pid)} -o pid=`, {
+    const output = execSync(`ps -p ${Math.trunc(pid)} -o pid=,stat=`, {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
-    return output === String(Math.trunc(pid));
+    const parts = output.split(/\s+/);
+    return parts[0] === String(Math.trunc(pid)) && Boolean(parts[1]) && !parts[1].startsWith("Z");
+  } catch {}
+
+  // Some hosted Linux environments can reject ps visibility while the PID is
+  // still signalable. Keep process.kill as a conservative fallback.
+  try {
+    process.kill(pid, 0);
+    return true;
   } catch {
     return false;
   }
@@ -804,6 +830,11 @@ async function startServerInternal(serverId: string): Promise<boolean> {
   if (!runtimeEnv.NODE_PACKAGES) runtimeEnv.NODE_PACKAGES = "";
   if (!runtimeEnv.UNNODE_PACKAGES) runtimeEnv.UNNODE_PACKAGES = "";
   if (!runtimeEnv.npm_config_include) runtimeEnv.npm_config_include = "dev";
+  // Do not reserve a 4 GB V8 heap on a small Railway/container host. That
+  // setting made npm look like it crashed the entire panel under memory
+  // pressure. Keep an explicit operator value, otherwise use a conservative
+  // default that can be overridden with NODE_OPTIONS.
+  const nodeOptions = runtimeEnv.NODE_OPTIONS?.trim() || "--max-old-space-size=768";
 
   const rawStartupCommand = (server.startupCommand || DEFAULT_NODE_STARTUP_COMMAND).trim();
   const normalizedStartupCommand = normalizeStartupCommand(rawStartupCommand, runtimeContainerAlias, runtime);
@@ -856,8 +887,8 @@ process.exit(0);
   const dependencyBootstrap = [
     'set -Eeuo pipefail',
     `echo '[Birdserver] Node runtime: ${runtime.version} (selected=${selectedNodeVersion})'`,
-    `export NODE_OPTIONS="--max-old-space-size=4096"`,
-    `if [[ -f package.json ]]; then`,
+    `  if [[ -f package.json ]]; then`,
+    `  export NODE_OPTIONS=${shellQuote(nodeOptions)}`,
     `  dependency_needs_install=0`,
     `  if [[ ! -d node_modules ]]; then dependency_needs_install=1; echo '[Birdserver] node_modules is missing; dependency repair required.'; fi`,
     `  if [[ "$dependency_needs_install" -eq 0 && -f ${shellQuote(dependencyMarker)} ]]; then`,
@@ -869,15 +900,19 @@ process.exit(0);
     `    dependency_needs_install=1`,
     `  fi`,
     `  if [[ "$dependency_needs_install" -eq 1 ]]; then`,
-    `    echo '[Birdserver] Installing project dependencies safely (avoiding OOM)...'`,
-    `    if ! command -v ${shellQuote(runtime.npm)} >/dev/null 2>&1; then echo '[Birdserver] npm is unavailable for the selected Node runtime.'; exit 127; fi`,
-    `    if [[ -f package-lock.json || -f npm-shrinkwrap.json ]]; then`,
-    `      ${shellQuote(runtime.npm)} install --no-audit --no-fund --progress=false --prefer-offline --fetch-retries=3 --fetch-timeout=180000 || ${shellQuote(runtime.npm)} ci --no-audit --no-fund --progress=false --prefer-offline --fetch-retries=3 --fetch-timeout=180000 || true`,
+    `    if [[ "${hasExplicitNodeInstall ? "1" : "0"}" -eq 1 ]]; then`,
+    `      echo '[Birdserver] Startup command contains npm install/ci; running that command once without a duplicate bootstrap.'`,
     `    else`,
-    `      ${shellQuote(runtime.npm)} install --no-audit --no-fund --progress=false --prefer-offline --fetch-retries=3 --fetch-timeout=180000 || true`,
+    `      echo '[Birdserver] Installing project dependencies safely (avoiding OOM)...'`,
+    `      if ! command -v ${shellQuote(runtime.npm)} >/dev/null 2>&1; then echo '[Birdserver] npm is unavailable for the selected Node runtime.'; exit 127; fi`,
+    `      if ! command -v timeout >/dev/null 2>&1; then echo '[Birdserver] timeout utility is unavailable on this host.'; exit 127; fi`,
+    `      if ! timeout --foreground 1800 ${shellQuote(runtime.npm)} install --no-audit --no-fund --progress=false --prefer-offline --fetch-retries=3 --fetch-timeout=180000; then`,
+    `        echo '[Birdserver] npm install failed or timed out; npm start was not launched.'`,
+    `        exit 1`,
+    `      fi`,
     `    fi`,
     `    touch ${shellQuote(dependencyMarker)}`,
-    `    echo '[Birdserver] Dependencies installation phase completed.'`,
+    `    echo '[Birdserver] Dependencies installation phase completed successfully.'`,
     `  else`,
     `    echo '[Birdserver] Dependencies verified from cache; skipping npm install.'`,
     `  fi`,
@@ -889,17 +924,25 @@ process.exit(0);
     `if [[ -f requirements.txt ]]; then if ! command -v python3 >/dev/null 2>&1; then echo '[Birdserver] requirements.txt exists but python3 is unavailable.'; exit 127; fi; python3 -m pip install --no-input -r requirements.txt || python3 -m pip install --no-input --user -r requirements.txt; fi`,
     'if [[ ! -z "${PYTHON_PACKAGES}" ]]; then if ! command -v python3 >/dev/null 2>&1; then echo "[Birdserver] PYTHON_PACKAGES requested but python3 is unavailable."; exit 127; fi; python3 -m pip install --no-input --user ${PYTHON_PACKAGES} || python3 -m pip install --no-input ${PYTHON_PACKAGES}; fi',
     'if [[ ! -z "${OS_PACKAGES}" ]]; then if ! command -v apt-get >/dev/null 2>&1 || [[ "$(id -u)" != "0" ]]; then echo "[Birdserver] OS_PACKAGES requested, but apt-get/root access is unavailable on this host."; exit 126; fi; DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${OS_PACKAGES}; fi',
-    `touch ${shellQuote(runtimeReadyMarker)}`,
-    `echo '[Birdserver] Runtime preparation complete. Starting bot...'`,
+    `echo '[Birdserver] Runtime preparation complete. Starting configured command...'`,
   ].join('\n');
 
-  // If the user put npm install in the startup command, don't run a second
-  // copy when our manifest cache already proved the dependencies are ready.
-  const startupWithoutRedundantInstall = hasExplicitNodeInstall
-    ? normalizedStartupCommand.replace(/(^|&&|;)\s*npm\s+(?:install|ci)\b[^&;]*(?=&&|;|$)\s*(?:&&\s*)?/i, "$1")
-    : normalizedStartupCommand;
-  const cleanedStartupCommand = startupWithoutRedundantInstall.trim();
-  const finalStartupCommand = cleanedStartupCommand || `${shellQuote(runtime.npm)} start`;
+  // Preserve an explicit npm install/ci in the configured command. It may
+  // install packages that are not listed in package.json; silently removing it
+  // made the console appear successful while skipping the user's real request.
+  const cleanedStartupCommand = normalizedStartupCommand.trim();
+  const baseStartupCommand = cleanedStartupCommand || `${shellQuote(runtime.npm)} start`;
+  const readinessMarkerCommand = `touch ${shellQuote(runtimeReadyMarker)}`;
+  // The UI must remain STARTING while an explicit npm install is running. For
+  // the common `npm install ... && npm start` form, place the marker between
+  // both commands; otherwise mark the runtime ready immediately before the
+  // configured start command.
+  const finalStartupCommand = hasExplicitNodeInstall
+    ? baseStartupCommand.replace(
+        /(\bnpm\s+(?:install|ci)\b[^;&]*)(\s*(?:&&|;)\s*)/i,
+        `$1 && ${readinessMarkerCommand} && `
+      )
+    : `${readinessMarkerCommand} && ${baseStartupCommand}`;
 
   const { inputLogPath, outputLogPath } = getServerConsolePaths(serverId);
   fs.writeFileSync(inputLogPath, "", "utf-8");
@@ -989,7 +1032,7 @@ process.exit(0);
   try {
     await db
       .update(servers)
-      .set({ status: "running", pid: runtimePid, updatedAt: new Date() })
+      .set({ status: "starting", pid: runtimePid, updatedAt: new Date() })
       .where(eq(servers.id, serverId));
   } catch (dbError) {
     console.warn(`[Birdserver] Database status sync skipped for ${serverId}:`, dbError);
@@ -1130,11 +1173,12 @@ export function getServerMetrics(serverId: string) {
   }
 
   const processMetrics = refreshProcessMetrics(serverId, pid);
+  const runtimeReady = fs.existsSync(path.join(getRuntimeDirectory(serverId), "runtime-ready"));
   const startedAt = state.startedAt ? new Date(state.startedAt).getTime() : Date.now();
   const uptimeSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
 
   return {
-    status: "running",
+    status: runtimeReady ? "running" : "starting",
     cpuPercent: processMetrics.cpuPercent,
     memoryBytes: processMetrics.memoryBytes,
     diskBytes,

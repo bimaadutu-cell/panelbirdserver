@@ -30,7 +30,10 @@ export async function GET(
       : null;
 
     const metrics = getServerMetrics(id);
-    const status = metrics.status === "running" ? "running" : "stopped";
+    // Preserve the real runtime phase. Flattening `starting` to `stopped`
+    // caused the UI to hide an active npm install and could overwrite the
+    // database while the wrapper was still preparing dependencies.
+    const status = metrics.status;
 
     // Runtime process state is the source of truth. Do not leave the DB showing
     // running when the actual process has already exited.
@@ -39,7 +42,7 @@ export async function GET(
         .update(servers)
         .set({
           status,
-          pid: status === "running" ? server.pid : 0,
+          pid: status === "stopped" ? 0 : server.pid,
           updatedAt: new Date(),
         })
         .where(eq(servers.id, id))
@@ -53,6 +56,7 @@ export async function GET(
       data: {
         ...server,
         status,
+        pid: status === "stopped" ? 0 : server.pid,
         allocation: allocation
           ? {
               id: allocation.id,
