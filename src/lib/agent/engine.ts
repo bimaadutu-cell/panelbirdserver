@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { spawn, execSync } from "child_process";
+import { spawn, execSync, execFile } from "child_process";
 import { createHash } from "crypto";
 import AdmZip from "adm-zip";
 import { db } from "@/db";
@@ -904,7 +904,6 @@ const metricsCache = new Map<string, CachedMetrics>();
 
 function calculateDiskBytesFast(serverRoot: string): Promise<number> {
   return new Promise((resolve) => {
-    const { execFile } = require("child_process") as typeof import("child_process");
     execFile("du", ["-sb", "--", serverRoot], {
       timeout: 15000,
       maxBuffer: 1024 * 1024,
@@ -933,7 +932,6 @@ function collectMetricsAsync(serverId: string): Promise<CachedMetrics["value"]> 
       return;
     }
 
-    const { execFile } = require("child_process") as typeof import("child_process");
     // Do not synchronously walk the whole process tree on every poll.
     // The tracked runtime PID is enough for the hot metrics path.
     const treePids = [pid];
