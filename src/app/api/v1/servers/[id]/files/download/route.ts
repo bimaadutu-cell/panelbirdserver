@@ -3,6 +3,7 @@ import { authorizeServerRequest } from "@/lib/server-access";
 import { getSecurePath } from "@/lib/agent/engine";
 import fs from "fs";
 import path from "path";
+import { Readable } from "stream";
 
 export async function GET(
   req: Request,
@@ -31,12 +32,15 @@ export async function GET(
       );
     }
 
-    const fileBuffer = fs.readFileSync(fullPath);
+    const stat = fs.statSync(fullPath);
     const fileName = path.basename(fullPath);
-    return new Response(fileBuffer, {
+    const stream = Readable.toWeb(fs.createReadStream(fullPath)) as unknown as ReadableStream<Uint8Array>;
+
+    return new Response(stream, {
       headers: {
         "Content-Type": "application/octet-stream",
-        "Content-Disposition": `attachment; filename="${fileName}"`,
+        "Content-Length": String(stat.size),
+        "Content-Disposition": `attachment; filename="${fileName.replace(/"/g, "")}"`,
       },
     });
   } catch (err: unknown) {

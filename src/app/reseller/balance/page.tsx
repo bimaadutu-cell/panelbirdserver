@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { Sidebar } from "@/components/layout/sidebar";
+import { Sidebar } from "@/components/layout/Sidebar";
 import { Wallet, Plus, ArrowUpRight } from "lucide-react";
 import { formatCurrency } from "@/lib/utils";
 

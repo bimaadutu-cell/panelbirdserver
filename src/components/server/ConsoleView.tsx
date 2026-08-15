@@ -87,8 +87,8 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
   const [clearingLogs, setClearingLogs] = useState(false);
 
   const consoleEndRef = useRef<HTMLDivElement>(null);
-  const pendingLinesRef = useRef<string[]>([]);
-  const flushFrameRef = useRef<number | null>(null);
+  const pendingLogsRef = useRef<string[]>([]);
+  const logFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let eventSource: EventSource | null = null;
@@ -102,18 +102,16 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
           const data = JSON.parse(event.data);
           if (!data.line) return;
 
-          // npm can emit hundreds/thousands of lines in a few seconds.
-          // Queue them and commit once per animation frame instead of causing
-          // a React render + QR/log parsing pass for every single line.
-          pendingLinesRef.current.push(String(data.line));
-          if (flushFrameRef.current !== null) return;
-
-          flushFrameRef.current = requestAnimationFrame(() => {
-            flushFrameRef.current = null;
-            const incoming = pendingLinesRef.current.splice(0);
-            if (!incoming.length) return;
-            setLogs((prev) => [...prev, ...incoming].slice(-600));
-          });
+          pendingLogsRef.current.push(String(data.line));
+          if (!logFlushTimerRef.current) {
+            logFlushTimerRef.current = setTimeout(() => {
+              const batch = pendingLogsRef.current.splice(0);
+              logFlushTimerRef.current = null;
+              if (batch.length) {
+                setLogs((prev) => [...prev, ...batch].slice(-600));
+              }
+            }, 100);
+          }
         } catch (e) {
           console.error("Error parsing log line:", e);
         }
@@ -128,11 +126,11 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
     connectLogs();
     return () => {
       eventSource?.close();
-      if (flushFrameRef.current !== null) {
-        cancelAnimationFrame(flushFrameRef.current);
-        flushFrameRef.current = null;
+      if (logFlushTimerRef.current) {
+        clearTimeout(logFlushTimerRef.current);
+        logFlushTimerRef.current = null;
       }
-      pendingLinesRef.current = [];
+      pendingLogsRef.current = [];
     };
   }, [serverId]);
 
@@ -201,7 +199,7 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
 
   useEffect(() => {
     if (autoScroll && consoleEndRef.current) {
-      consoleEndRef.current.scrollIntoView({ behavior: "auto", block: "end" });
+      consoleEndRef.current.scrollIntoView({ block: "nearest" });
     }
   }, [visibleLogs, autoScroll]);
 

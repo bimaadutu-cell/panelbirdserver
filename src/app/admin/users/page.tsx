@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { Sidebar } from "@/components/layout/sidebar";
+import { Sidebar } from "@/components/layout/Sidebar";
 import { Users, Plus, ShieldCheck, Trash2 } from "lucide-react";
 
 export default function AdminUsersPage() {

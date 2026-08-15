@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useEffect, useState, use } from "react";
+import React, { useEffect, useRef, useState, use } from "react";
 import { useRouter } from "next/navigation";
-import { Sidebar } from "@/components/layout/sidebar";
+import { Sidebar } from "@/components/layout/Sidebar";
 import { ServerMetricsGauge } from "@/components/server/ServerMetricsGauge";
 import { ConsoleView } from "@/components/server/ConsoleView";
 import { FileManagerView } from "@/components/server/FileManagerView";
@@ -39,14 +39,14 @@ export default function ServerDetailPage({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [powerError, setPowerError] = useState<string | null>(null);
   const router = useRouter();
+  const sessionCheckedRef = useRef(false);
 
-  const fetchServerDetails = async (includeUser = false, signal?: AbortSignal) => {
+  const fetchServerDetails = async () => {
     try {
-      if (includeUser) {
+      if (!sessionCheckedRef.current) {
         const meRes = await fetch("/api/auth/me", {
           credentials: "include",
           cache: "no-store",
-          signal,
         });
         const meData = await meRes.json().catch(() => null);
 
@@ -57,12 +57,12 @@ export default function ServerDetailPage({
         }
 
         setUser(meData.data.user);
+        sessionCheckedRef.current = true;
       }
 
       const srvRes = await fetch(`/api/v1/servers/${encodeURIComponent(id)}`, {
         credentials: "include",
         cache: "no-store",
-        signal,
       });
       const srvData = await srvRes.json().catch(() => null);
 
@@ -73,51 +73,44 @@ export default function ServerDetailPage({
         setLoadError("Sesi login telah berakhir. Silakan login kembali.");
         router.replace("/");
       } else if (srvRes.status === 404) {
+        // A real 404 means the resource is gone; keep the current UI if this
+        // is only a background poll so a transient response cannot blank the page.
         if (!server) setServer(null);
         setLoadError("Server tidak ditemukan di database.");
       } else {
+        // Never replace an already-rendered server with a transient polling error.
+        // The next poll can recover automatically.
         setLoadError(
-          srvData?.error?.message || `Gagal memuat server (HTTP ${srvRes.status}).`
+          srvData?.error?.message ||
+          `Gagal memuat server (HTTP ${srvRes.status}).`
         );
       }
-    } catch (err: any) {
-      if (err?.name !== "AbortError") {
-        console.error("[Birdserver] server detail load failed:", err);
-        setLoadError("Koneksi ke server gagal. Mencoba lagi...");
-      }
+    } catch (err) {
+      console.error("[Birdserver] server detail load failed:", err);
+      setLoadError("Koneksi ke server gagal. Mencoba lagi...");
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    const controller = new AbortController();
-    let active = true;
-    let busy = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
 
-    const load = async (includeUser = false) => {
-      if (!active || busy) return;
-      busy = true;
-      try {
-        await fetchServerDetails(includeUser, controller.signal);
-      } finally {
-        busy = false;
+    const poll = async () => {
+      if (cancelled) return;
+      await fetchServerDetails();
+      if (!cancelled) {
+        timer = setTimeout(poll, 5000);
       }
     };
 
-    void load(true);
-
-    // The detail endpoint is intentionally light now. Five-second polling
-    // avoids competing with a busy npm install while still feeling live.
-    const interval = setInterval(() => void load(false), 5000);
-
+    poll();
     return () => {
-      active = false;
-      controller.abort();
-      clearInterval(interval);
+      cancelled = true;
+      if (timer) clearTimeout(timer);
     };
   }, [id]);
-
 
   const handlePowerAction = async (action: "start" | "stop" | "restart" | "kill") => {
     setPowerError(null);
@@ -129,7 +122,7 @@ export default function ServerDetailPage({
       });
       const data = await res.json();
       if (data.success) {
-        await fetchServerDetails(false);
+        await fetchServerDetails();
       } else {
         setPowerError(data.error?.message || "Power action failed");
       }
@@ -226,10 +219,10 @@ export default function ServerDetailPage({
 
         {/* Live Gauges */}
         <ServerMetricsGauge
+          serverId={server.id}
           memoryMb={server.memoryMb}
           cpuPercent={server.cpuPercent}
           diskMb={server.diskMb}
-          metrics={server.metrics}
         />
 
         {/* Tabs Bar */}

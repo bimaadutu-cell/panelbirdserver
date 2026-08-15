@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "next build --webpack",
+    "build": "next build",
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit"
@@ -41,5 +41,5 @@
     "tailwindcss": "4.1.17",
     "typescript": "5.9.3"
   },
-  "version": "3.0.1"
+  "version": "3.0.0"
 }
