@@ -115,7 +115,7 @@ export default function ServersPage() {
             </p>
           </div>
 
-          {user?.role === "admin" ? (
+          {user?.role === "admin" || user?.role === "reseller" ? (
             <button
               onClick={() => setShowDeploy(true)}
               className="px-4 py-2.5 rounded-xl text-xs font-bold bg-white text-black hover:bg-zinc-200 transition-all flex items-center gap-1.5 shadow-[0_0_15px_rgba(255,255,255,0.3)]"

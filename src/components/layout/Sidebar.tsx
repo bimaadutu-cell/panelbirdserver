@@ -70,14 +70,12 @@ export function Sidebar({ user }: SidebarProps) {
       { label: "System Settings", href: "/admin/system", icon: <Settings className="w-5 h-5" /> },
     ];
   } else if (role === "reseller") {
-    // ⚠️ STRICT PROHIBITION: RESELLERS MUST NOT HAVE API KEYS MENU
+    // ⚠️ STRICT PROHIBITION: RESELLERS MUST NOT HAVE API KEYS, PACKAGES, ORDERS, OR BALANCE TOPUP
     navItems = [
       { label: "Dashboard", href: "/dashboard", icon: <LayoutDashboard className="w-5 h-5" /> },
       { label: "Customers", href: "/reseller/customers", icon: <Users className="w-5 h-5" /> },
       { label: "Servers", href: "/servers", icon: <Server className="w-5 h-5" /> },
-      { label: "Packages", href: "/reseller/packages", icon: <Package className="w-5 h-5" /> },
-      { label: "Orders", href: "/reseller/orders", icon: <ShoppingCart className="w-5 h-5" /> },
-      { label: "Balance & Topup", href: "/reseller/balance", icon: <Wallet className="w-5 h-5" /> },
+      { label: "Provision", href: "/admin/provision", icon: <Package className="w-5 h-5" /> },
       { label: "Transactions", href: "/reseller/transactions", icon: <Activity className="w-5 h-5" /> },
       { label: "Account", href: "/account", icon: <Settings className="w-5 h-5" /> },
     ];

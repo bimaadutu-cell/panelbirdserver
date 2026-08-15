@@ -92,9 +92,9 @@ export async function POST(req: Request) {
       );
     }
 
-    if (session.role !== "admin") {
+    if (session.role !== "admin" && session.role !== "reseller") {
       return NextResponse.json(
-        { success: false, error: { code: "FORBIDDEN", message: "Only admin can create servers directly" } },
+        { success: false, error: { code: "FORBIDDEN", message: "Only admin and reseller can create servers directly" } },
         { status: 403 }
       );
     }

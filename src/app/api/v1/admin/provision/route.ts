@@ -80,9 +80,9 @@ export async function POST(req: Request) {
   try {
     await ensureDatabaseReady();
     const session = await getRequestSession(req);
-    if (!session || session.role !== "admin") {
+    if (!session || (session.role !== "admin" && session.role !== "reseller")) {
       return NextResponse.json(
-        { success: false, error: { code: "FORBIDDEN", message: "Admin access required" } },
+        { success: false, error: { code: "FORBIDDEN", message: "Admin or reseller access required" } },
         { status: 403 }
       );
     }
