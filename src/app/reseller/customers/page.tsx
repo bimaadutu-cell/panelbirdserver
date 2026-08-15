@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { Sidebar } from "@/components/layout/Sidebar";
+import { Sidebar } from "@/components/layout/sidebar";
 import { Users, Plus, ShieldAlert, Trash2, Key, UserX, UserCheck } from "lucide-react";
 
 export default function ResellerCustomersPage() {

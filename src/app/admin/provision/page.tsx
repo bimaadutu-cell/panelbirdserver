@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Sidebar } from "@/components/layout/Sidebar";
+import { Sidebar } from "@/components/layout/sidebar";
 import { Rocket, UserPlus, Server, Shield } from "lucide-react";
 
 export default function AdminProvisionPage() {

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { Sidebar } from "@/components/layout/Sidebar";
+import { Sidebar } from "@/components/layout/sidebar";
 import { Key, Plus, Trash2, Copy, ShieldAlert, Check, Shield } from "lucide-react";
 
 export default function ApiKeysPage() {

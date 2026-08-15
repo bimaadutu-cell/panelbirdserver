@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState, use } from "react";
 import { useRouter } from "next/navigation";
-import { Sidebar } from "@/components/layout/Sidebar";
+import { Sidebar } from "@/components/layout/sidebar";
 import { ServerMetricsGauge } from "@/components/server/ServerMetricsGauge";
 import { ConsoleView } from "@/components/server/ConsoleView";
 import { FileManagerView } from "@/components/server/FileManagerView";

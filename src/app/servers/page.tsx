@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { Sidebar } from "@/components/layout/Sidebar";
+import { Sidebar } from "@/components/layout/sidebar";
 import Link from "next/link";
 import { Server, Plus, Search, Play, Square, ExternalLink, HardDrive, Cpu, X, Trash2 } from "lucide-react";
 
