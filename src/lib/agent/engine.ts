@@ -934,7 +934,10 @@ function collectMetricsAsync(serverId: string): Promise<CachedMetrics["value"]> 
     }
 
     const { execFile } = require("child_process") as typeof import("child_process");
-    // Do not synchronously walk the whole process tree on every poll.\n    // The tracked runtime PID is enough for the hot metrics path.\n    const treePids = [pid];\n    const diskPromise = calculateDiskBytesFast(serverRoot);
+    // Do not synchronously walk the whole process tree on every poll.
+    // The tracked runtime PID is enough for the hot metrics path.
+    const treePids = [pid];
+    const diskPromise = calculateDiskBytesFast(serverRoot);
 
     execFile(
       "ps",
