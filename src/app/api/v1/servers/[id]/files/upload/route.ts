@@ -3,8 +3,6 @@ import { authorizeServerRequest } from "@/lib/server-access";
 import { getSecurePath } from "@/lib/agent/engine";
 import fs from "fs";
 import path from "path";
-import { Readable } from "stream";
-import { pipeline } from "stream/promises";
 
 export async function POST(
   req: Request,
@@ -27,12 +25,11 @@ export async function POST(
     }
 
     for (const file of files) {
+      const bytes = await file.arrayBuffer();
+      const buffer = Buffer.from(bytes);
       const targetPath = getSecurePath(id, path.join(directory, file.name));
       fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-      await pipeline(
-        Readable.fromWeb(file.stream() as any),
-        fs.createWriteStream(targetPath)
-      );
+      fs.writeFileSync(targetPath, buffer);
     }
 
     return NextResponse.json({ success: true, message: `${files.length} file(s) uploaded successfully` });

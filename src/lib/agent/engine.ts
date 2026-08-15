@@ -1,6 +1,6 @@
 import fs from "fs";
 import path from "path";
-import { spawn, execFile, execSync } from "child_process";
+import { spawn, execSync } from "child_process";
 import { createHash } from "crypto";
 import AdmZip from "adm-zip";
 import { db } from "@/db";
@@ -11,63 +11,6 @@ import { cryptoRandomString } from "@/lib/utils";
 const BASE_STORAGE_DIR = path.resolve(process.cwd(), "storage");
 const SERVERS_DIR = path.join(BASE_STORAGE_DIR, "servers");
 const BACKUPS_DIR = path.join(BASE_STORAGE_DIR, "backups");
-
-// Keep heavy telemetry off the Next.js request thread. Scanning a bot's
-// node_modules directory every few seconds can freeze the whole panel.
-const diskUsageCache = new Map<string, { bytes: number; refreshedAt: number; pending: boolean }>();
-const processMetricsCache = new Map<string, { pid: number; cpuPercent: number; memoryBytes: number; refreshedAt: number; pending: boolean }>();
-const DISK_USAGE_TTL_MS = 10_000;
-const PROCESS_METRICS_TTL_MS = 1_500;
-
-function refreshDiskUsage(serverId: string, serverRoot: string) {
-  const current = diskUsageCache.get(serverId) || { bytes: 0, refreshedAt: 0, pending: false };
-  if (current.pending || Date.now() - current.refreshedAt < DISK_USAGE_TTL_MS) return;
-
-  diskUsageCache.set(serverId, { ...current, pending: true });
-  execFile(
-    "du",
-    ["-sb", "--exclude=.birdserver-runtime", serverRoot],
-    { timeout: 20_000 },
-    (_error, stdout) => {
-      const latest = diskUsageCache.get(serverId) || { bytes: 0, refreshedAt: 0, pending: false };
-      const parsed = Number(String(stdout).trim().split(/\s+/)[0]);
-      diskUsageCache.set(serverId, {
-        bytes: Number.isFinite(parsed) && parsed >= 0 ? parsed : latest.bytes,
-        refreshedAt: Date.now(),
-        pending: false,
-      });
-    }
-  );
-}
-
-function refreshProcessMetrics(serverId: string, pid: number) {
-  const current = processMetricsCache.get(serverId) || { pid, cpuPercent: 0, memoryBytes: 0, refreshedAt: 0, pending: false };
-  if (current.pid === pid && (current.pending || Date.now() - current.refreshedAt < PROCESS_METRICS_TTL_MS)) return current;
-
-  processMetricsCache.set(serverId, { ...current, pid, pending: true });
-  execFile("ps", ["-o", "pid=,rss=,%cpu=", "-p", String(pid)], { timeout: 2_000 }, (error, stdout) => {
-    let memoryBytes = 0;
-    let cpuPercent = 0;
-
-    if (!error) {
-      for (const line of String(stdout).split("\n").map((s) => s.trim()).filter(Boolean)) {
-        const [, rssStr, cpuStr] = line.split(/\s+/);
-        memoryBytes += Number(rssStr || 0) * 1024;
-        cpuPercent += Number(cpuStr || 0);
-      }
-    }
-
-    processMetricsCache.set(serverId, {
-      pid,
-      memoryBytes: Number.isFinite(memoryBytes) ? memoryBytes : current.memoryBytes,
-      cpuPercent: Number.isFinite(cpuPercent) ? Math.round(cpuPercent) : current.cpuPercent,
-      refreshedAt: Date.now(),
-      pending: false,
-    });
-  });
-
-  return current;
-}
 
 fs.mkdirSync(SERVERS_DIR, { recursive: true });
 fs.mkdirSync(BACKUPS_DIR, { recursive: true });
@@ -86,7 +29,6 @@ interface RuntimeState {
   lastExitAt?: string;
   lastCommand?: string;
   pid?: number | null;
-  phase?: "starting" | "installing" | "running" | "stopped" | "error";
 }
 
 export const DEFAULT_NODE_STARTUP_COMMAND = 'node /home/container/${MAIN_FILE}';
@@ -171,17 +113,6 @@ function getNodeRuntimeDir(serverId: string, version: string) {
   return getSecurePath(serverId, `.birdserver-runtime/node-v${version}`);
 }
 
-async function sha256File(filePath: string) {
-  const hash = createHash("sha256");
-  await new Promise<void>((resolve, reject) => {
-    const stream = fs.createReadStream(filePath);
-    stream.on("data", (chunk) => hash.update(chunk));
-    stream.once("end", resolve);
-    stream.once("error", reject);
-  });
-  return hash.digest("hex");
-}
-
 async function ensureNodeRuntime(serverId: string, version: string): Promise<RuntimeBinaries> {
   if (version === "system") {
     return {
@@ -239,39 +170,24 @@ async function ensureNodeRuntime(serverId: string, version: string): Promise<Run
     const archiveXz = `node-v${runtimeVersion}-linux-${arch}.tar.xz`;
     const archiveGz = `node-v${runtimeVersion}-linux-${arch}.tar.gz`;
 
-    const download = async (url: string, output: string) => {
+    const download = (url: string, output: string) => {
       const env = { ...process.env, PATH: buildRuntimePath(process.env.PATH) };
       const curl = detectHostBinary("curl", "");
       const wget = detectHostBinary("wget", "");
-
       if (curl) {
-        await new Promise<void>((resolve, reject) => {
-          const child = execFile(
-            curl,
-            ["--fail", "--location", "--retry", "3", "--retry-delay", "2", "--connect-timeout", "20", "--max-time", "600", url, "--output", output],
-            { cwd: tmpRoot, env, timeout: 660_000 },
-            (error) => error ? reject(error) : resolve()
-          );
-          child.stdout?.resume();
-          child.stderr?.resume();
-        });
+        execSync(
+          `${shellQuote(curl)} --fail --location --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 600 ${shellQuote(url)} --output ${shellQuote(output)}`,
+          { cwd: tmpRoot, env, stdio: "inherit" }
+        );
         return;
       }
-
       if (wget) {
-        await new Promise<void>((resolve, reject) => {
-          const child = execFile(
-            wget,
-            ["--https-only", "--tries=3", "--timeout=20", `--output-document=${output}`, url],
-            { cwd: tmpRoot, env, timeout: 660_000 },
-            (error) => error ? reject(error) : resolve()
-          );
-          child.stdout?.resume();
-          child.stderr?.resume();
-        });
+        execSync(
+          `${shellQuote(wget)} --https-only --tries=3 --timeout=20 --server-response --output-document=${shellQuote(output)} ${shellQuote(url)}`,
+          { cwd: tmpRoot, env, stdio: "inherit" }
+        );
         return;
       }
-
       throw new Error("Neither curl nor wget is available to download the selected Node.js runtime.");
     };
 
@@ -281,7 +197,7 @@ async function ensureNodeRuntime(serverId: string, version: string): Promise<Run
       for (const archive of [archiveXz, archiveGz]) {
         try {
           const archivePath = path.join(tmpRoot, archive);
-          await download(`${baseUrl}/${archive}`, archivePath);
+          download(`${baseUrl}/${archive}`, archivePath);
           downloadedArchive = archivePath;
           break;
         } catch (error) {
@@ -304,7 +220,7 @@ async function ensureNodeRuntime(serverId: string, version: string): Promise<Run
     let sumsDownloaded = false;
     for (const baseUrl of baseUrls) {
       try {
-        await download(`${baseUrl}/SHASUMS256.txt`, sumsPath);
+        download(`${baseUrl}/SHASUMS256.txt`, sumsPath);
         sumsDownloaded = true;
         break;
       } catch {
@@ -327,7 +243,7 @@ async function ensureNodeRuntime(serverId: string, version: string): Promise<Run
     }
 
     const expected = expectedLine.trim().split(/\s+/)[0];
-    const actual = await sha256File(downloadedArchive);
+    const actual = createHash("sha256").update(fs.readFileSync(downloadedArchive)).digest("hex");
     if (actual !== expected) {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
       throw new Error(`Node.js runtime checksum mismatch for ${archiveName}.`);
@@ -337,18 +253,9 @@ async function ensureNodeRuntime(serverId: string, version: string): Promise<Run
     fs.mkdirSync(path.dirname(runtimeDir), { recursive: true });
 
     const tarArgs = downloadedArchive.endsWith(".tar.xz")
-      ? ["-xJf", downloadedArchive, "-C", tmpRoot]
-      : ["-xzf", downloadedArchive, "-C", tmpRoot];
-    await new Promise<void>((resolve, reject) => {
-      const child = execFile(
-        "tar",
-        tarArgs,
-        { cwd: tmpRoot, timeout: 300_000 },
-        (error) => error ? reject(error) : resolve()
-      );
-      child.stdout?.resume();
-      child.stderr?.resume();
-    });
+      ? `-xJf ${shellQuote(downloadedArchive)}`
+      : `-xzf ${shellQuote(downloadedArchive)}`;
+    execSync(`tar ${tarArgs} -C ${shellQuote(tmpRoot)}`, { cwd: tmpRoot, stdio: "inherit" });
 
     const extracted = path.join(tmpRoot, `node-v${runtimeVersion}-linux-${arch}`);
     if (!fs.existsSync(extracted)) {
@@ -579,6 +486,46 @@ function isPidAlive(pid: number | null | undefined) {
   }
 }
 
+function getProcessTreePids(rootPid: number): number[] {
+  try {
+    const output = execSync("ps -eo pid=,ppid=", { encoding: "utf-8" });
+    const rows = output
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [pidStr, ppidStr] = line.split(/\s+/);
+        return { pid: Number(pidStr), ppid: Number(ppidStr) };
+      });
+
+    const childrenByParent = new Map<number, number[]>();
+    for (const row of rows) {
+      if (!childrenByParent.has(row.ppid)) childrenByParent.set(row.ppid, []);
+      childrenByParent.get(row.ppid)?.push(row.pid);
+    }
+
+    const visited = new Set<number>();
+    const queue = [rootPid];
+    while (queue.length) {
+      const current = queue.shift()!;
+      if (visited.has(current)) continue;
+      visited.add(current);
+      for (const child of childrenByParent.get(current) || []) {
+        if (!visited.has(child)) queue.push(child);
+      }
+    }
+
+    return Array.from(visited);
+  } catch {
+    return [rootPid];
+  }
+}
+
+function reconcileServerRuntimeStatus(server: typeof servers.$inferSelect) {
+  const alive = isPidAlive(server.pid);
+  return alive ? "running" : "stopped";
+}
+
 function ensureNodeConsoleSupport(filePath: string) {
   if (!fs.existsSync(filePath)) return;
   const current = fs.readFileSync(filePath, "utf-8");
@@ -703,20 +650,6 @@ export function initializeServerFiles(serverId: string, templateCategory: string
   ensureNodeConsoleSupport(indexPath);
 }
 
-function getDependencyKey(projectRoot: string, runtimeVersion: string, extra = "") {
-  const hash = createHash("sha256");
-  for (const name of ["package.json", "package-lock.json", "npm-shrinkwrap.json"]) {
-    const filePath = path.join(projectRoot, name);
-    if (fs.existsSync(filePath)) {
-      hash.update(name);
-      hash.update(fs.readFileSync(filePath));
-    }
-  }
-  hash.update(`node:${runtimeVersion}`);
-  hash.update(`extra:${extra}`);
-  return hash.digest("hex").slice(0, 24);
-}
-
 export async function startServer(serverId: string): Promise<boolean> {
   const server = await db.query.servers.findFirst({ where: eq(servers.id, serverId) });
   if (!server) throw new Error("Server not found");
@@ -763,11 +696,6 @@ export async function startServer(serverId: string): Promise<boolean> {
     HOME: serverRoot,
     PATH: [runtime.binDir, buildRuntimePath(process.env.PATH)].filter(Boolean).join(":"),
     NODE_RUNTIME_VERSION: selectedNodeVersion,
-    npm_config_progress: "false",
-    npm_config_audit: "false",
-    npm_config_fund: "false",
-    npm_config_update_notifier: "false",
-    npm_config_maxsockets: "8",
   };
 
   if (!runtimeEnv.MAIN_FILE) runtimeEnv.MAIN_FILE = detectMainFile(runtimeWorkingDirectory);
@@ -778,50 +706,22 @@ export async function startServer(serverId: string): Promise<boolean> {
 
   const rawStartupCommand = (server.startupCommand || DEFAULT_NODE_STARTUP_COMMAND).trim();
   const normalizedStartupCommand = normalizeStartupCommand(rawStartupCommand, runtimeContainerAlias, runtime);
-  const dependencyKey = getDependencyKey(
-    runtimeWorkingDirectory,
-    runtime.version,
-    `${initialEnv.NODE_PACKAGES || ""}|${initialEnv.UNNODE_PACKAGES || ""}|${initialEnv.PYTHON_PACKAGES || ""}|${initialEnv.OS_PACKAGES || ""}`
-  );
-  const dependencyMarker = path.join(getRuntimeDirectory(serverId), `deps-${dependencyKey}.ok`);
-  const runtimeReadyMarker = path.join(getRuntimeDirectory(serverId), "runtime-ready");
-  const hasExplicitNodeInstall = /\bnpm\s+(?:install|ci)\b/.test(rawStartupCommand);
-  try { fs.rmSync(runtimeReadyMarker, { force: true }); } catch {}
 
-  // Dependency installation is real, but it is cached by the package manifests.
-  // The old version ran `npm install` on every START, which made every restart
-  // painfully slow and kept large dependency trees active for no reason.
+  // Always perform real dependency installation on the host before starting
+  // the uploaded project. This is intentionally not a fake/simulated status:
+  // npm/pip/apt commands execute against the actual Railway runtime filesystem.
+  const hasExplicitNodeInstall = /\bnpm\s+(?:install|ci)\b/.test(rawStartupCommand);
   const dependencyBootstrap = [
     'set -e',
     `echo '[Birdserver] Node runtime: ${runtime.version} (selected=${selectedNodeVersion})'`,
-    `if [[ -f package.json && ! -f ${shellQuote(dependencyMarker)} ]]; then`,
-    `  echo '[Birdserver] Installing project dependencies (first run or package manifest changed)...'`,
-    `  if ! command -v ${shellQuote(runtime.npm)} >/dev/null 2>&1; then echo '[Birdserver] npm is unavailable for the selected Node runtime.'; exit 127; fi`,
-    `  if [[ -f package-lock.json || -f npm-shrinkwrap.json ]]; then`,
-    `    ${shellQuote(runtime.npm)} ci --no-audit --no-fund --progress=false --prefer-offline --fetch-retries=2 --fetch-timeout=120000 || ${shellQuote(runtime.npm)} install --no-audit --no-fund --progress=false --prefer-offline --fetch-retries=2 --fetch-timeout=120000`,
-    `  else`,
-    `    ${shellQuote(runtime.npm)} install --no-audit --no-fund --progress=false --prefer-offline --fetch-retries=2 --fetch-timeout=120000`,
-    `  fi`,
-    `  touch ${shellQuote(dependencyMarker)}`,
-    `  echo '[Birdserver] Dependencies installed and cached.'`,
-    `else`,
-    `  echo '[Birdserver] Dependencies already cached; skipping npm install.'`,
-    `fi`,
-    'if [[ ! -z "${NODE_PACKAGES}" ]]; then ' + shellQuote(runtime.npm) + ' install --no-audit --no-fund --progress=false --prefer-offline ${NODE_PACKAGES}; fi',
+    `if [[ -f package.json ]] && ${hasExplicitNodeInstall ? 'false' : 'true'}; then if ! command -v ${shellQuote(runtime.npm)} >/dev/null 2>&1; then echo '[Birdserver] npm is unavailable for the selected Node runtime.'; exit 127; fi; ${shellQuote(runtime.npm)} install --no-audit --no-fund --prefer-online; fi`,
+    'if [[ ! -z "${NODE_PACKAGES}" ]]; then ' + shellQuote(runtime.npm) + ' install --no-audit --no-fund ${NODE_PACKAGES}; fi',
     'if [[ ! -z "${UNNODE_PACKAGES}" ]]; then ' + shellQuote(runtime.npm) + ' uninstall ${UNNODE_PACKAGES}; fi',
     `if [[ -f requirements.txt ]]; then if ! command -v python3 >/dev/null 2>&1; then echo '[Birdserver] requirements.txt exists but python3 is unavailable.'; exit 127; fi; python3 -m pip install --no-input -r requirements.txt || python3 -m pip install --no-input --user -r requirements.txt; fi`,
     'if [[ ! -z "${PYTHON_PACKAGES}" ]]; then if ! command -v python3 >/dev/null 2>&1; then echo "[Birdserver] PYTHON_PACKAGES requested but python3 is unavailable."; exit 127; fi; python3 -m pip install --no-input --user ${PYTHON_PACKAGES} || python3 -m pip install --no-input ${PYTHON_PACKAGES}; fi',
     'if [[ ! -z "${OS_PACKAGES}" ]]; then if ! command -v apt-get >/dev/null 2>&1 || [[ "$(id -u)" != "0" ]]; then echo "[Birdserver] OS_PACKAGES requested, but apt-get/root access is unavailable on this host."; exit 126; fi; DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${OS_PACKAGES}; fi',
-    `touch ${shellQuote(runtimeReadyMarker)}`,
-    `echo '[Birdserver] Runtime preparation complete. Starting bot...'`,
   ].join('; ');
-
-  // If the user put npm install in the startup command, don't run a second
-  // copy when our manifest cache already proved the dependencies are ready.
-  const startupWithoutRedundantInstall = hasExplicitNodeInstall
-    ? normalizedStartupCommand.replace(/(^|&&|;)\s*npm\s+(?:install|ci)\b[^&;]*(?=&&|;|$)\s*(?:&&\s*)?/i, "$1")
-    : normalizedStartupCommand;
-  const finalStartupCommand = `${dependencyBootstrap}; ${startupWithoutRedundantInstall}`;
+  const finalStartupCommand = `${dependencyBootstrap}; ${normalizedStartupCommand}`;
 
   const { inputLogPath, outputLogPath } = getServerConsolePaths(serverId);
   fs.writeFileSync(inputLogPath, "", "utf-8");
@@ -860,7 +760,7 @@ export async function startServer(serverId: string): Promise<boolean> {
   child.on("exit", (code, signal) => {
     const exitMessage = `[Birdserver] Runtime exited (code=${code ?? "null"}, signal=${signal ?? "none"}).`;
     appendConsoleOutput(serverId, exitMessage);
-    writeRuntimeState(serverId, { lastExitAt: new Date().toISOString(), pid: null, phase: "stopped" });
+    writeRuntimeState(serverId, { lastExitAt: new Date().toISOString(), pid: null });
     void db.update(servers)
       .set({ status: "stopped", pid: 0, updatedAt: new Date() })
       .where(eq(servers.id, serverId))
@@ -876,7 +776,6 @@ export async function startServer(serverId: string): Promise<boolean> {
     startedAt: new Date().toISOString(),
     lastCommand: server.startupCommand,
     pid: runtimePid,
-    phase: "installing",
     lastExitAt: undefined,
   });
 
@@ -911,7 +810,7 @@ export async function stopServer(serverId: string): Promise<boolean> {
   }
 
   appendConsoleOutput(serverId, `[Birdserver] Stop requested at ${new Date().toISOString()}`);
-  writeRuntimeState(serverId, { lastExitAt: new Date().toISOString(), pid: null, phase: "stopped" });
+  writeRuntimeState(serverId, { lastExitAt: new Date().toISOString(), pid: null });
 
   try {
     await db
@@ -949,7 +848,7 @@ export async function killServer(serverId: string): Promise<boolean> {
   }
 
   appendConsoleOutput(serverId, `[Birdserver] Kill requested at ${new Date().toISOString()}`);
-  writeRuntimeState(serverId, { lastExitAt: new Date().toISOString(), pid: null, phase: "stopped" });
+  writeRuntimeState(serverId, { lastExitAt: new Date().toISOString(), pid: null });
 
   try {
     await db
@@ -984,11 +883,27 @@ export async function sendCommandToServer(serverId: string, command: string): Pr
 
 export function getServerMetrics(serverId: string) {
   const serverRoot = getServerDirectory(serverId);
+  let diskBytes = 0;
+
+  const calcDirSize = (dir: string): number => {
+    if (!fs.existsSync(dir)) return 0;
+    let total = 0;
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) total += calcDirSize(full);
+      else total += fs.statSync(full).size;
+    }
+    return total;
+  };
+
+  try {
+    diskBytes = calcDirSize(serverRoot);
+  } catch {
+    diskBytes = 0;
+  }
+
   const state = readRuntimeState(serverId);
   const pid = state.pid ?? null;
-
-  refreshDiskUsage(serverId, serverRoot);
-  const diskBytes = diskUsageCache.get(serverId)?.bytes || 0;
 
   if (!pid || !isPidAlive(pid)) {
     return {
@@ -1000,15 +915,29 @@ export function getServerMetrics(serverId: string) {
     };
   }
 
-  const processMetrics = refreshProcessMetrics(serverId, pid);
-  const runtimeReady = fs.existsSync(path.join(getRuntimeDirectory(serverId), "runtime-ready"));
+  let memoryBytes = 0;
+  let cpuPercent = 0;
+
+  try {
+    const treePids = getProcessTreePids(pid);
+    const psOut = execSync(`ps -o pid=,rss=,%cpu= -p ${treePids.join(",")}`, { encoding: "utf-8" });
+    for (const line of psOut.split("\n").map((s) => s.trim()).filter(Boolean)) {
+      const [, rssStr, cpuStr] = line.split(/\s+/);
+      memoryBytes += Number(rssStr || 0) * 1024;
+      cpuPercent += Number(cpuStr || 0);
+    }
+  } catch {
+    memoryBytes = 0;
+    cpuPercent = 0;
+  }
+
   const startedAt = state.startedAt ? new Date(state.startedAt).getTime() : Date.now();
   const uptimeSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
 
   return {
-    status: runtimeReady ? "running" : "installing",
-    cpuPercent: processMetrics.cpuPercent,
-    memoryBytes: processMetrics.memoryBytes,
+    status: "running",
+    cpuPercent: Math.round(cpuPercent),
+    memoryBytes,
     diskBytes,
     uptimeSeconds,
   };
@@ -1095,45 +1024,16 @@ export async function compressServerItems(serverId: string, sources: string[], a
 export async function extractServerArchive(serverId: string, archiveRelPath: string, targetFolderRel: string = ""): Promise<boolean> {
   const archivePath = getSecurePath(serverId, archiveRelPath);
   const destDir = getSecurePath(serverId, targetFolderRel);
+  const zip = new AdmZip(archivePath);
 
-  // Archive extraction is CPU/memory heavy. Run AdmZip in a child process so
-  // the Next.js event loop stays responsive while a large bot ZIP is unpacked.
-  const worker = `
-    const fs = require("fs");
-    const path = require("path");
-    const AdmZip = require("adm-zip");
-    const [archivePath, destDir] = process.argv.slice(1);
-    const root = path.resolve(destDir);
-    const zip = new AdmZip(archivePath);
-    for (const entry of zip.getEntries()) {
-      const target = path.resolve(root, entry.entryName);
-      if (target !== root && !target.startsWith(root + path.sep)) {
-        throw new Error("SECURITY_ALERT: Zip Slip path detected");
-      }
+  for (const entry of zip.getEntries()) {
+    const entryTargetPath = path.resolve(destDir, entry.entryName);
+    if (!entryTargetPath.startsWith(destDir)) {
+      throw new Error("SECURITY_ALERT: Zip Slip path detected");
     }
-    fs.mkdirSync(root, { recursive: true });
-    zip.extractAllTo(root, true);
-  `;
+  }
 
-  await new Promise<void>((resolve, reject) => {
-    const child = spawn(process.execPath, ["-e", worker, archivePath, destDir], {
-      cwd: process.cwd(),
-      stdio: ["ignore", "ignore", "pipe"],
-      detached: false,
-    });
-
-    let stderr = "";
-    child.stderr?.on("data", (chunk) => {
-      stderr += String(chunk).slice(-4000);
-    });
-
-    child.once("error", reject);
-    child.once("exit", (code, signal) => {
-      if (code === 0) resolve();
-      else reject(new Error(`Archive extraction failed (code=${code ?? "null"}, signal=${signal ?? "none"})${stderr ? `: ${stderr.trim()}` : ""}`));
-    });
-  });
-
+  zip.extractAllTo(destDir, true);
   return true;
 }
 

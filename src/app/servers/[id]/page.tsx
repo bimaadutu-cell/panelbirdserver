@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useRef, useState, use } from "react";
+import React, { useEffect, useState, use } from "react";
 import { useRouter } from "next/navigation";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { ServerMetricsGauge } from "@/components/server/ServerMetricsGauge";
@@ -39,26 +39,22 @@ export default function ServerDetailPage({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [powerError, setPowerError] = useState<string | null>(null);
   const router = useRouter();
-  const sessionCheckedRef = useRef(false);
 
   const fetchServerDetails = async () => {
     try {
-      if (!sessionCheckedRef.current) {
-        const meRes = await fetch("/api/auth/me", {
-          credentials: "include",
-          cache: "no-store",
-        });
-        const meData = await meRes.json().catch(() => null);
+      const meRes = await fetch("/api/auth/me", {
+        credentials: "include",
+        cache: "no-store",
+      });
+      const meData = await meRes.json().catch(() => null);
 
-        if (!meRes.ok || !meData?.success) {
-          setLoadError(meData?.error?.message || "Session tidak valid. Silakan login kembali.");
-          if (meRes.status === 401) router.replace("/");
-          return;
-        }
-
-        setUser(meData.data.user);
-        sessionCheckedRef.current = true;
+      if (!meRes.ok || !meData?.success) {
+        setLoadError(meData?.error?.message || "Session tidak valid. Silakan login kembali.");
+        if (meRes.status === 401) router.replace("/");
+        return;
       }
+
+      setUser(meData.data.user);
 
       const srvRes = await fetch(`/api/v1/servers/${encodeURIComponent(id)}`, {
         credentials: "include",
@@ -94,22 +90,9 @@ export default function ServerDetailPage({
   };
 
   useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let cancelled = false;
-
-    const poll = async () => {
-      if (cancelled) return;
-      await fetchServerDetails();
-      if (!cancelled) {
-        timer = setTimeout(poll, 5000);
-      }
-    };
-
-    poll();
-    return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
-    };
+    fetchServerDetails();
+    const interval = setInterval(fetchServerDetails, 3000);
+    return () => clearInterval(interval);
   }, [id]);
 
   const handlePowerAction = async (action: "start" | "stop" | "restart" | "kill") => {

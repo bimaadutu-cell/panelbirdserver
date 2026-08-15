@@ -87,8 +87,6 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
   const [clearingLogs, setClearingLogs] = useState(false);
 
   const consoleEndRef = useRef<HTMLDivElement>(null);
-  const pendingLogsRef = useRef<string[]>([]);
-  const logFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let eventSource: EventSource | null = null;
@@ -100,18 +98,7 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
       eventSource.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          if (!data.line) return;
-
-          pendingLogsRef.current.push(String(data.line));
-          if (!logFlushTimerRef.current) {
-            logFlushTimerRef.current = setTimeout(() => {
-              const batch = pendingLogsRef.current.splice(0);
-              logFlushTimerRef.current = null;
-              if (batch.length) {
-                setLogs((prev) => [...prev, ...batch].slice(-600));
-              }
-            }, 100);
-          }
+          if (data.line) setLogs((prev) => [...prev.slice(-1200), data.line]);
         } catch (e) {
           console.error("Error parsing log line:", e);
         }
@@ -124,14 +111,7 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
     };
 
     connectLogs();
-    return () => {
-      eventSource?.close();
-      if (logFlushTimerRef.current) {
-        clearTimeout(logFlushTimerRef.current);
-        logFlushTimerRef.current = null;
-      }
-      pendingLogsRef.current = [];
-    };
+    return () => eventSource?.close();
   }, [serverId]);
 
   const { visibleLogs, asciiQrLines, qrPayload } = useMemo(() => {
@@ -199,7 +179,7 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
 
   useEffect(() => {
     if (autoScroll && consoleEndRef.current) {
-      consoleEndRef.current.scrollIntoView({ block: "nearest" });
+      consoleEndRef.current.scrollIntoView({ behavior: "smooth" });
     }
   }, [visibleLogs, autoScroll]);
 
