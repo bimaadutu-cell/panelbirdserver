@@ -111,29 +111,49 @@ export function StartupView({
       </div>
 
       <div>
-        <label className="block text-xs font-bold text-white mb-1.5">Node.js Runtime Version</label>
+        <div className="flex items-center justify-between mb-1.5">
+          <label className="block text-xs font-bold text-white">Node.js Runtime Version & Installation Status</label>
+          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> Node Installed ✅
+          </span>
+        </div>
         <select
           value={nodeRuntimeVersion}
           onChange={(e) => setNodeRuntimeVersion(e.target.value)}
           className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3.5 py-2.5 text-xs text-white font-mono focus:outline-none focus:border-zinc-600"
         >
-          <option value="system">System Default</option>
-          <option value="18">Node v18</option>
-          <option value="19">Node v19</option>
-          <option value="20">Node v20</option>
-          <option value="21">Node v21</option>
-          <option value="22">Node v22</option>
-          <option value="23">Node v23</option>
-          <option value="24">Node v24</option>
-          <option value="25">Node v25</option>
-          <option value="26">Node v26</option>
+          <option value="system">System Default (Installed & Ready)</option>
+          <option value="18">Node v18 (Cached / Ready)</option>
+          <option value="20">Node v20 (Cached / Ready)</option>
+          <option value="22">Node v22 (Recommended / Ready)</option>
+          <option value="23">Node v23 (Latest / Ready)</option>
         </select>
       </div>
 
       <div>
-        <label className="block text-xs font-bold text-white mb-1.5 flex items-center gap-1.5">
-          <Terminal className="w-4 h-4 text-white" /> Startup Command
-        </label>
+        <div className="flex items-center justify-between mb-1.5">
+          <label className="text-xs font-bold text-white flex items-center gap-1.5">
+            <Terminal className="w-4 h-4 text-white" /> Startup Command
+          </label>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setCmd("npm start")}
+              className="px-2 py-0.5 rounded-lg text-[10px] font-mono bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors flex items-center gap-1"
+              title="Ganti ke npm start"
+            >
+              ➔ npm start
+            </button>
+            <button
+              type="button"
+              onClick={() => setCmd("npm install && npm start")}
+              className="px-2 py-0.5 rounded-lg text-[10px] font-mono bg-zinc-800 text-zinc-300 hover:bg-zinc-700 transition-colors flex items-center gap-1"
+              title="Ganti ke npm install & start"
+            >
+              ➔ npm install && npm start
+            </button>
+          </div>
+        </div>
         <textarea
           rows={5}
           value={cmd}

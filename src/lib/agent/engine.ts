@@ -89,7 +89,7 @@ interface RuntimeState {
   phase?: "starting" | "installing" | "running" | "stopped" | "error";
 }
 
-export const DEFAULT_NODE_STARTUP_COMMAND = 'node /home/container/${MAIN_FILE}';
+export const DEFAULT_NODE_STARTUP_COMMAND = 'npm start';
 
 function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
@@ -1118,12 +1118,11 @@ export function getServerMetrics(serverId: string) {
   }
 
   const processMetrics = refreshProcessMetrics(serverId, pid);
-  const runtimeReady = fs.existsSync(path.join(getRuntimeDirectory(serverId), "runtime-ready"));
   const startedAt = state.startedAt ? new Date(state.startedAt).getTime() : Date.now();
   const uptimeSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
 
   return {
-    status: runtimeReady ? "running" : "installing",
+    status: "running",
     cpuPercent: processMetrics.cpuPercent,
     memoryBytes: processMetrics.memoryBytes,
     diskBytes,

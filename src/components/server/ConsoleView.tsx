@@ -209,7 +209,36 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
     if (!autoScroll) return;
     const el = consoleScrollRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    
+    if (autoScrollRafRef.current !== null) {
+      cancelAnimationFrame(autoScrollRafRef.current);
+      autoScrollRafRef.current = null;
+    }
+
+    const animate = () => {
+      const container = consoleScrollRef.current;
+      if (!container) return;
+      const target = container.scrollHeight - container.clientHeight;
+      const distance = target - container.scrollTop;
+
+      if (Math.abs(distance) < 2) {
+        container.scrollTop = target;
+        autoScrollRafRef.current = null;
+        return;
+      }
+
+      container.scrollTop += distance * 0.45;
+      autoScrollRafRef.current = requestAnimationFrame(animate);
+    };
+
+    autoScrollRafRef.current = requestAnimationFrame(animate);
+
+    return () => {
+      if (autoScrollRafRef.current !== null) {
+        cancelAnimationFrame(autoScrollRafRef.current);
+        autoScrollRafRef.current = null;
+      }
+    };
   }, [visibleLogs, autoScroll]);
 
   const handleSendCommand = async (e: React.FormEvent) => {
