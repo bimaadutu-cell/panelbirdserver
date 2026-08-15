@@ -39,7 +39,7 @@ export function ServerMetricsGauge({
     };
 
     fetchMetrics();
-    const interval = setInterval(fetchMetrics, 5000);
+    const interval = setInterval(fetchMetrics, 2000);
     return () => clearInterval(interval);
   }, [serverId]);
 
@@ -71,7 +71,7 @@ export function ServerMetricsGauge({
         </div>
         <div className="w-full h-2 bg-zinc-800 rounded-full overflow-hidden">
           <div
-            className="h-full bg-white transition-all duration-500 shadow-[0_0_10px_rgba(255,255,255,0.8)]"
+            className="h-full bg-white transition-all duration-200 ease-out shadow-[0_0_10px_rgba(255,255,255,0.8)]"
             style={{ width: `${Math.min(100, (metrics.cpuPercent / cpuPercent) * 100)}%` }}
           />
         </div>
@@ -89,7 +89,7 @@ export function ServerMetricsGauge({
         </div>
         <div className="w-full h-2 bg-zinc-800 rounded-full overflow-hidden">
           <div
-            className="h-full bg-white transition-all duration-500 shadow-[0_0_10px_rgba(255,255,255,0.8)]"
+            className="h-full bg-white transition-all duration-200 ease-out shadow-[0_0_10px_rgba(255,255,255,0.8)]"
             style={{ width: `${memUsagePercent}%` }}
           />
         </div>
@@ -107,7 +107,7 @@ export function ServerMetricsGauge({
         </div>
         <div className="w-full h-2 bg-zinc-800 rounded-full overflow-hidden">
           <div
-            className="h-full bg-white transition-all duration-500 shadow-[0_0_10px_rgba(255,255,255,0.8)]"
+            className="h-full bg-white transition-all duration-200 ease-out shadow-[0_0_10px_rgba(255,255,255,0.8)]"
             style={{ width: `${diskUsagePercent}%` }}
           />
         </div>

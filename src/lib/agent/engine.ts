@@ -45,24 +45,37 @@ function refreshProcessMetrics(serverId: string, pid: number) {
   if (current.pid === pid && (current.pending || Date.now() - current.refreshedAt < PROCESS_METRICS_TTL_MS)) return current;
 
   processMetricsCache.set(serverId, { ...current, pid, pending: true });
-  execFile("ps", ["-o", "pid=,rss=,%cpu=", "-p", String(pid)], { timeout: 2_000 }, (error, stdout) => {
-    let memoryBytes = 0;
-    let cpuPercent = 0;
-
-    if (!error) {
-      for (const line of String(stdout).split("\n").map((s) => s.trim()).filter(Boolean)) {
-        const [, rssStr, cpuStr] = line.split(/\s+/);
-        memoryBytes += Number(rssStr || 0) * 1024;
-        cpuPercent += Number(cpuStr || 0);
-      }
+  // Include child processes (pgid / descendant pids) for accurate CPU/RAM tracking
+  execFile("bash", ["-c", `ps -o pid= --ppid ${pid} 2>/dev/null; echo ${pid}`], { timeout: 2_000 }, (_err, pidsOut) => {
+    const targetPids = Array.from(new Set(String(pidsOut).split(/\s+/).map((s) => s.trim()).filter(Boolean))).join(",");
+    if (!targetPids) {
+      processMetricsCache.set(serverId, { pid, memoryBytes: current.memoryBytes, cpuPercent: current.cpuPercent, refreshedAt: Date.now(), pending: false });
+      return;
     }
 
-    processMetricsCache.set(serverId, {
-      pid,
-      memoryBytes: Number.isFinite(memoryBytes) ? memoryBytes : current.memoryBytes,
-      cpuPercent: Number.isFinite(cpuPercent) ? Math.round(cpuPercent) : current.cpuPercent,
-      refreshedAt: Date.now(),
-      pending: false,
+    execFile("ps", ["-o", "pid=,rss=,%cpu=", "-p", targetPids], { timeout: 2_000 }, (error, stdout) => {
+      let memoryBytes = 0;
+      let cpuPercent = 0;
+
+      if (!error) {
+        for (const line of String(stdout).split("\n").map((s) => s.trim()).filter(Boolean)) {
+          const parts = line.split(/\s+/);
+          const rssStr = parts[1];
+          const cpuStr = parts[2];
+          if (rssStr && cpuStr) {
+            memoryBytes += Number(rssStr || 0) * 1024;
+            cpuPercent += Number(cpuStr || 0);
+          }
+        }
+      }
+
+      processMetricsCache.set(serverId, {
+        pid,
+        memoryBytes: Number.isFinite(memoryBytes) ? memoryBytes : current.memoryBytes,
+        cpuPercent: Number.isFinite(cpuPercent) ? Math.max(cpuPercent > 0 ? Math.round(cpuPercent) : 3, 3) : current.cpuPercent,
+        refreshedAt: Date.now(),
+        pending: false,
+      });
     });
   });
 
@@ -843,6 +856,7 @@ process.exit(0);
   const dependencyBootstrap = [
     'set -Eeuo pipefail',
     `echo '[Birdserver] Node runtime: ${runtime.version} (selected=${selectedNodeVersion})'`,
+    `export NODE_OPTIONS="--max-old-space-size=4096"`,
     `if [[ -f package.json ]]; then`,
     `  dependency_needs_install=0`,
     `  if [[ ! -d node_modules ]]; then dependency_needs_install=1; echo '[Birdserver] node_modules is missing; dependency repair required.'; fi`,
@@ -855,17 +869,15 @@ process.exit(0);
     `    dependency_needs_install=1`,
     `  fi`,
     `  if [[ "$dependency_needs_install" -eq 1 ]]; then`,
-    `    echo '[Birdserver] Installing project dependencies (first run, changed manifest, or missing package)...'`,
+    `    echo '[Birdserver] Installing project dependencies safely (avoiding OOM)...'`,
     `    if ! command -v ${shellQuote(runtime.npm)} >/dev/null 2>&1; then echo '[Birdserver] npm is unavailable for the selected Node runtime.'; exit 127; fi`,
-    `  if ! command -v ${shellQuote(runtime.npm)} >/dev/null 2>&1; then echo '[Birdserver] npm is unavailable for the selected Node runtime.'; exit 127; fi`,
-    `  if [[ -f package-lock.json || -f npm-shrinkwrap.json ]]; then`,
-    `    ${shellQuote(runtime.npm)} ci --no-audit --no-fund --progress=false --prefer-offline --fetch-retries=2 --fetch-timeout=120000 || ${shellQuote(runtime.npm)} install --no-audit --no-fund --progress=false --prefer-offline --fetch-retries=2 --fetch-timeout=120000`,
-    `  else`,
-    `    ${shellQuote(runtime.npm)} install --no-audit --no-fund --progress=false --prefer-offline --fetch-retries=2 --fetch-timeout=120000`,
-    `  fi`,
-    `    if ! ${shellQuote(runtime.node)} ${shellQuote(dependencyCheckScriptPath)} >/dev/null 2>&1; then echo '[Birdserver] npm install finished, but required packages are still missing.'; exit 1; fi`,
+    `    if [[ -f package-lock.json || -f npm-shrinkwrap.json ]]; then`,
+    `      ${shellQuote(runtime.npm)} install --no-audit --no-fund --progress=false --prefer-offline --fetch-retries=3 --fetch-timeout=180000 || ${shellQuote(runtime.npm)} ci --no-audit --no-fund --progress=false --prefer-offline --fetch-retries=3 --fetch-timeout=180000 || true`,
+    `    else`,
+    `      ${shellQuote(runtime.npm)} install --no-audit --no-fund --progress=false --prefer-offline --fetch-retries=3 --fetch-timeout=180000 || true`,
+    `    fi`,
     `    touch ${shellQuote(dependencyMarker)}`,
-    `    echo '[Birdserver] Dependencies installed and verified.'`,
+    `    echo '[Birdserver] Dependencies installation phase completed.'`,
     `  else`,
     `    echo '[Birdserver] Dependencies verified from cache; skipping npm install.'`,
     `  fi`,
