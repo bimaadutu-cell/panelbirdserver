@@ -1,3 +1,0 @@
-# Kept as a fallback if Railway/Nixpacks is selected instead of Docker.
-[phases.setup]
-nixPkgs = ["nodejs_22", "bash", "procps", "coreutils", "tar", "caCertificates"]
