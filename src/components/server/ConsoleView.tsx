@@ -87,6 +87,11 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
   const [clearingLogs, setClearingLogs] = useState(false);
 
   const consoleEndRef = useRef<HTMLDivElement>(null);
+  const consoleScrollRef = useRef<HTMLDivElement>(null);
+  const autoScrollRafRef = useRef<number | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingLogsRef = useRef<string[]>([]);
+  const logFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     let eventSource: EventSource | null = null;
@@ -98,7 +103,18 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
       eventSource.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          if (data.line) setLogs((prev) => [...prev.slice(-1200), data.line]);
+          if (!data.line) return;
+
+          pendingLogsRef.current.push(String(data.line));
+          if (!logFlushTimerRef.current) {
+            logFlushTimerRef.current = setTimeout(() => {
+              const batch = pendingLogsRef.current.splice(0);
+              logFlushTimerRef.current = null;
+              if (batch.length) {
+                setLogs((prev) => [...prev, ...batch].slice(-600));
+              }
+            }, 80);
+          }
         } catch (e) {
           console.error("Error parsing log line:", e);
         }
@@ -106,12 +122,24 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
       eventSource.onerror = () => {
         setIsConnected(false);
         eventSource?.close();
-        setTimeout(connectLogs, 3000);
+        if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = setTimeout(connectLogs, 1500);
       };
     };
 
     connectLogs();
-    return () => eventSource?.close();
+    return () => {
+      eventSource?.close();
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      if (logFlushTimerRef.current) {
+        clearTimeout(logFlushTimerRef.current);
+        logFlushTimerRef.current = null;
+      }
+      pendingLogsRef.current = [];
+    };
   }, [serverId]);
 
   const { visibleLogs, asciiQrLines, qrPayload } = useMemo(() => {
@@ -178,9 +206,33 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
   }, [qrPayload, asciiQrLines]);
 
   useEffect(() => {
-    if (autoScroll && consoleEndRef.current) {
-      consoleEndRef.current.scrollIntoView({ behavior: "smooth" });
+    if (!autoScroll) return;
+
+    // Scroll the actual console viewport rather than calling
+    // scrollIntoView(). A single requestAnimationFrame per rendered batch
+    // keeps the motion smooth even when the bot prints many lines at once.
+    if (autoScrollRafRef.current !== null) {
+      cancelAnimationFrame(autoScrollRafRef.current);
     }
+
+    autoScrollRafRef.current = requestAnimationFrame(() => {
+      const container = consoleScrollRef.current;
+      if (!container) return;
+
+      container.scrollTo({
+        top: container.scrollHeight,
+        behavior: "smooth",
+      });
+
+      autoScrollRafRef.current = null;
+    });
+
+    return () => {
+      if (autoScrollRafRef.current !== null) {
+        cancelAnimationFrame(autoScrollRafRef.current);
+        autoScrollRafRef.current = null;
+      }
+    };
   }, [visibleLogs, autoScroll]);
 
   const handleSendCommand = async (e: React.FormEvent) => {
@@ -319,7 +371,7 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
           </div>
         </div>
 
-        <div className="flex-1 p-4 font-mono text-xs leading-relaxed overflow-y-auto text-zinc-200 bg-black space-y-1 select-text">
+        <div ref={consoleScrollRef} className="flex-1 p-4 font-mono text-xs leading-relaxed overflow-y-auto scroll-smooth text-zinc-200 bg-black space-y-1 select-text">
           {visibleLogs.length === 0 ? <div className="text-zinc-600 italic">Console output is empty. Press START to launch process.</div> : visibleLogs.map((line, idx) => <div key={idx} className={`whitespace-pre-wrap break-all hover:bg-zinc-900/40 px-1 rounded ${getLineClassName(line)}`}>{line}</div>)}
           <div ref={consoleEndRef} />
         </div>

@@ -51,10 +51,15 @@ export async function POST(
       console.warn("[Birdserver] power audit log skipped:", auditError);
     }
 
-    return NextResponse.json({
-      success,
-      message: `Server power action '${action}' completed successfully`,
-    });
+    return NextResponse.json(
+      {
+        success,
+        message: success
+          ? `Server power action '${action}' completed successfully`
+          : `Server power action '${action}' failed. Check the server console for the exact runtime error.`,
+      },
+      { status: success ? 200 : 400 }
+    );
   } catch (err: unknown) {
     const errorMessage = err instanceof Error ? err.message : String(err);
     return NextResponse.json(

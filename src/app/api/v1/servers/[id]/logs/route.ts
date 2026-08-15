@@ -54,10 +54,19 @@ export async function GET(
         } catch {
           // ignore polling errors while file rotates
         }
-      }, 700);
+      }, 200);
+
+      const heartbeat = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(": ping\n\n"));
+        } catch {
+          clearInterval(heartbeat);
+        }
+      }, 15000);
 
       req.signal.addEventListener("abort", () => {
         clearInterval(interval);
+        clearInterval(heartbeat);
         controller.close();
       });
     },

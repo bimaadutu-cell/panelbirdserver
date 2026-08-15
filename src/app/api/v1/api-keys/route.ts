@@ -47,32 +47,6 @@ async function ensureApiKeysTable() {
   `);
 
   const columns = await getApiKeyColumns();
-
-  // Legacy deployments sometimes created api_keys.user_id as INTEGER while
-  // BirdServer users use TEXT ids such as usr_xxx. Normalize that column so
-  // API keys can authenticate the same account on every deployment.
-  const legacyUserColumn = columns.get("user_id");
-  if (legacyUserColumn && ["integer", "bigint", "smallint"].includes(legacyUserColumn.data_type)) {
-    // Drop legacy FK constraints first. PostgreSQL cannot change the type of a
-    // referencing column while an FK to an integer users.id is still attached.
-    const fkRows = await pool.query<{ constraint_name: string }>(`
-      SELECT tc.constraint_name
-      FROM information_schema.table_constraints tc
-      JOIN information_schema.key_column_usage kcu
-        ON kcu.constraint_name = tc.constraint_name
-       AND kcu.table_schema = tc.table_schema
-       AND kcu.table_name = tc.table_name
-      WHERE tc.table_schema = 'public'
-        AND tc.table_name = 'api_keys'
-        AND tc.constraint_type = 'FOREIGN KEY'
-        AND kcu.column_name = 'user_id'
-    `);
-    for (const row of fkRows.rows) {
-      await pool.query(`ALTER TABLE api_keys DROP CONSTRAINT IF EXISTS "${row.constraint_name.replace(/"/g, '""')}"`);
-    }
-    await pool.query(`ALTER TABLE api_keys ALTER COLUMN user_id TYPE TEXT USING user_id::text`);
-  }
-
   const required: Array<[string, string]> = [
     ["user_id", "TEXT"],
     ["name", "TEXT NOT NULL DEFAULT 'API Key'"],
@@ -118,11 +92,13 @@ function adminRequired() {
 function normalizeUserIdForColumn(sessionId: unknown, column: ColumnInfo | undefined) {
   const value = String(sessionId);
   if (!column) return value;
-  if (["integer", "bigint", "smallint"].includes(column.data_type) && /^-?\d+$/.test(value)) {
+
+  if (["integer", "bigint", "smallint"].includes(column.data_type)) {
+    if (!/^-?\d+$/.test(value)) {
+      throw new Error(`Database api_keys.user_id memakai ${column.data_type}, tetapi session user id bukan angka: ${value}`);
+    }
     return Number(value);
   }
-  // The self-healing migration normally makes this TEXT. Keeping a string here
-  // also prevents a fake numeric conversion from breaking modern usr_xxx IDs.
   return value;
 }
 
