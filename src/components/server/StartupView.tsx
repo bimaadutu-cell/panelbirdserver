@@ -31,10 +31,14 @@ export function StartupView({
       .join("\n")
   );
   const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setSaving(true);
+    setSaveMessage(null);
+    setSaveError(null);
 
     const parsedEnv: Record<string, string> = {};
     envStr.split("\n").forEach((line) => {
@@ -59,13 +63,13 @@ export function StartupView({
       });
       const data = await res.json();
       if (data.success) {
-        alert("Startup configuration updated successfully!");
+        setSaveMessage(data.message || "Startup configuration saved. Press START to apply it.");
         onSaved();
       } else {
-        alert(data.error?.message || "Failed to update startup settings");
+        setSaveError(data.error?.message || "Failed to update startup settings");
       }
-    } catch {
-      alert("Failed to update startup settings");
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "Failed to update startup settings");
     } finally {
       setSaving(false);
     }
@@ -151,6 +155,17 @@ export function StartupView({
           className="w-full bg-zinc-900 border border-zinc-800 rounded-xl p-3.5 text-xs text-white font-mono focus:outline-none focus:border-zinc-600"
         />
       </div>
+
+      {saveMessage && (
+        <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-xs text-emerald-300">
+          {saveMessage}
+        </div>
+      )}
+      {saveError && (
+        <div className="rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-xs text-red-300">
+          {saveError}
+        </div>
+      )}
 
       <button
         type="submit"

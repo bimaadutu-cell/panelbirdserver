@@ -718,7 +718,22 @@ function getDependencyKey(projectRoot: string, runtimeVersion: string, extra = "
   return hash.digest("hex").slice(0, 24);
 }
 
+const startLocks = new Map<string, Promise<boolean>>();
+
 export async function startServer(serverId: string): Promise<boolean> {
+  const existingStart = startLocks.get(serverId);
+  if (existingStart) return existingStart;
+
+  const operation = startServerInternal(serverId);
+  startLocks.set(serverId, operation);
+  try {
+    return await operation;
+  } finally {
+    if (startLocks.get(serverId) === operation) startLocks.delete(serverId);
+  }
+}
+
+async function startServerInternal(serverId: string): Promise<boolean> {
   const server = await db.query.servers.findFirst({ where: eq(servers.id, serverId) });
   if (!server) throw new Error("Server not found");
   if (server.status === "suspended") throw new Error("Server is suspended");
@@ -792,21 +807,70 @@ export async function startServer(serverId: string): Promise<boolean> {
   // Dependency installation is real, but it is cached by the package manifests.
   // The old version ran `npm install` on every START, which made every restart
   // painfully slow and kept large dependency trees active for no reason.
+  const dependencyCheckScriptPath = path.join(getRuntimeDirectory(serverId), "check-dependencies.mjs");
+  const dependencyCheckScript = `import fs from "node:fs";
+import path from "node:path";
+
+const root = process.cwd();
+const packagePath = path.join(root, "package.json");
+if (!fs.existsSync(packagePath)) process.exit(0);
+
+const pkg = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+const groups = [
+  ["dependencies", pkg.dependencies || {}],
+  ["optionalDependencies", pkg.optionalDependencies || {}],
+];
+const missing = [];
+
+for (const [, deps] of groups) {
+  for (const name of Object.keys(deps)) {
+    const target = path.join(root, "node_modules", ...name.split("/"));
+    if (!fs.existsSync(target)) missing.push(name);
+  }
+}
+
+if (missing.length) {
+  console.log("[Birdserver] Missing npm packages: " + missing.join(", "));
+  process.exit(2);
+}
+
+process.exit(0);
+`;
+  fs.writeFileSync(dependencyCheckScriptPath, dependencyCheckScript, "utf8");
+
+  const dependencyStatusPath = path.join(getRuntimeDirectory(serverId), "dependency-status.json");
+
   const dependencyBootstrap = [
-    'set -e',
+    'set -Eeuo pipefail',
     `echo '[Birdserver] Node runtime: ${runtime.version} (selected=${selectedNodeVersion})'`,
-    `if [[ -f package.json && ! -f ${shellQuote(dependencyMarker)} ]]; then`,
-    `  echo '[Birdserver] Installing project dependencies (first run or package manifest changed)...'`,
+    `if [[ -f package.json ]]; then`,
+    `  dependency_needs_install=0`,
+    `  if [[ ! -d node_modules ]]; then dependency_needs_install=1; echo '[Birdserver] node_modules is missing; dependency repair required.'; fi`,
+    `  if [[ "$dependency_needs_install" -eq 0 && -f ${shellQuote(dependencyMarker)} ]]; then`,
+    `    if ! ${shellQuote(runtime.node)} ${shellQuote(dependencyCheckScriptPath)} > ${shellQuote(dependencyStatusPath)} 2>&1; then`,
+    `      dependency_needs_install=1`,
+    `      echo '[Birdserver] Cached dependency marker is stale; required packages are missing. Repairing dependencies...'`,
+    `    fi`,
+    `  else`,
+    `    dependency_needs_install=1`,
+    `  fi`,
+    `  if [[ "$dependency_needs_install" -eq 1 ]]; then`,
+    `    echo '[Birdserver] Installing project dependencies (first run, changed manifest, or missing package)...'`,
+    `    if ! command -v ${shellQuote(runtime.npm)} >/dev/null 2>&1; then echo '[Birdserver] npm is unavailable for the selected Node runtime.'; exit 127; fi`,
     `  if ! command -v ${shellQuote(runtime.npm)} >/dev/null 2>&1; then echo '[Birdserver] npm is unavailable for the selected Node runtime.'; exit 127; fi`,
     `  if [[ -f package-lock.json || -f npm-shrinkwrap.json ]]; then`,
     `    ${shellQuote(runtime.npm)} ci --no-audit --no-fund --progress=false --prefer-offline --fetch-retries=2 --fetch-timeout=120000 || ${shellQuote(runtime.npm)} install --no-audit --no-fund --progress=false --prefer-offline --fetch-retries=2 --fetch-timeout=120000`,
     `  else`,
     `    ${shellQuote(runtime.npm)} install --no-audit --no-fund --progress=false --prefer-offline --fetch-retries=2 --fetch-timeout=120000`,
     `  fi`,
-    `  touch ${shellQuote(dependencyMarker)}`,
-    `  echo '[Birdserver] Dependencies installed and cached.'`,
+    `    if ! ${shellQuote(runtime.node)} ${shellQuote(dependencyCheckScriptPath)} >/dev/null 2>&1; then echo '[Birdserver] npm install finished, but required packages are still missing.'; exit 1; fi`,
+    `    touch ${shellQuote(dependencyMarker)}`,
+    `    echo '[Birdserver] Dependencies installed and verified.'`,
+    `  else`,
+    `    echo '[Birdserver] Dependencies verified from cache; skipping npm install.'`,
+    `  fi`,
     `else`,
-    `  echo '[Birdserver] Dependencies already cached; skipping npm install.'`,
+    `  echo '[Birdserver] No package.json found; skipping npm dependency installation.'`,
     `fi`,
     'if [[ ! -z "${NODE_PACKAGES}" ]]; then ' + shellQuote(runtime.npm) + ' install --no-audit --no-fund --progress=false --prefer-offline ${NODE_PACKAGES}; fi',
     'if [[ ! -z "${UNNODE_PACKAGES}" ]]; then ' + shellQuote(runtime.npm) + ' uninstall ${UNNODE_PACKAGES}; fi',

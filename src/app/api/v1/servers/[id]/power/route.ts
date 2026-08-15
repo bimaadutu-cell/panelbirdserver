@@ -27,10 +27,12 @@ export async function POST(
     let success = false;
     if (action === "start") {
       success = await startServer(id);
-      try {
-        await dispatchWebhook("server.started", { serverId: id });
-      } catch (webhookError) {
-        console.warn("[Birdserver] start webhook skipped:", webhookError);
+      if (success) {
+        try {
+          await dispatchWebhook("server.started", { serverId: id });
+        } catch (webhookError) {
+          console.warn("[Birdserver] start webhook skipped:", webhookError);
+        }
       }
     } else if (action === "stop") {
       success = await stopServer(id);
@@ -55,8 +57,8 @@ export async function POST(
       {
         success,
         message: success
-          ? `Server power action '${action}' completed successfully`
-          : `Server power action '${action}' failed. Check the server console for the exact runtime error.`,
+          ? `Server power action '${action}' accepted successfully`
+          : `Server power action '${action}' could not be completed. Check the console for the exact runtime error.`,
       },
       { status: success ? 200 : 400 }
     );

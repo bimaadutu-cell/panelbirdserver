@@ -124,10 +124,15 @@ export default function ServerDetailPage({
       if (data.success) {
         await fetchServerDetails();
       } else {
-        setPowerError(data.error?.message || "Power action failed");
+        const code = data.error?.code ? ` [${data.error.code}]` : "";
+        setPowerError((data.error?.message || data.message || "Power action failed") + code);
       }
-    } catch {
-      setPowerError("Koneksi power action gagal. Silakan coba lagi.");
+    } catch (error) {
+      setPowerError(
+        error instanceof Error
+          ? `Power action gagal: ${error.message}`
+          : "Power action gagal karena koneksi ke panel terputus."
+      );
     }
   };
 

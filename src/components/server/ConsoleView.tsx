@@ -208,28 +208,42 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
   useEffect(() => {
     if (!autoScroll) return;
 
-    // Scroll the actual console viewport rather than calling
-    // scrollIntoView(). A single requestAnimationFrame per rendered batch
-    // keeps the motion smooth even when the bot prints many lines at once.
     if (autoScrollRafRef.current !== null) {
       cancelAnimationFrame(autoScrollRafRef.current);
+      autoScrollRafRef.current = null;
     }
 
-    autoScrollRafRef.current = requestAnimationFrame(() => {
-      const container = consoleScrollRef.current;
-      if (!container) return;
+    const container = consoleScrollRef.current;
+    if (!container) return;
 
-      container.scrollTo({
-        top: container.scrollHeight,
-        behavior: "smooth",
-      });
+    // Native `behavior: smooth` calls can overlap when logs arrive rapidly.
+    // That causes the "jittery" scroll seen with fast bot output. Use one
+    // requestAnimationFrame loop with easing instead, so there is only ever
+    // one animation driving the console viewport.
+    let frame = 0;
+    const animate = () => {
+      const el = consoleScrollRef.current;
+      if (!el) return;
+      const target = Math.max(0, el.scrollHeight - el.clientHeight);
+      const distance = target - el.scrollTop;
 
-      autoScrollRafRef.current = null;
-    });
+      if (Math.abs(distance) < 1) {
+        el.scrollTop = target;
+        autoScrollRafRef.current = null;
+        return;
+      }
+
+      el.scrollTop += distance * 0.22;
+      frame = requestAnimationFrame(animate);
+      autoScrollRafRef.current = frame;
+    };
+
+    frame = requestAnimationFrame(animate);
+    autoScrollRafRef.current = frame;
 
     return () => {
-      if (autoScrollRafRef.current !== null) {
-        cancelAnimationFrame(autoScrollRafRef.current);
+      cancelAnimationFrame(frame);
+      if (autoScrollRafRef.current === frame) {
         autoScrollRafRef.current = null;
       }
     };

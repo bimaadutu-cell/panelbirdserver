@@ -72,6 +72,105 @@ export async function GET(
   }
 }
 
+
+export async function PATCH(
+  req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await params;
+    const auth = await authorizeServerRequest(req, id);
+    if (!auth.ok) return auth.response;
+
+    const { server, session } = auth;
+    const body = await req.json().catch(() => ({}));
+
+    const dockerImage =
+      typeof body.dockerImage === "string" && body.dockerImage.trim()
+        ? body.dockerImage.trim()
+        : server.dockerImage;
+
+    const startupCommand =
+      typeof body.startupCommand === "string" && body.startupCommand.trim()
+        ? body.startupCommand.trim()
+        : server.startupCommand;
+
+    const workingDirectory =
+      typeof body.workingDirectory === "string" && body.workingDirectory.trim()
+        ? body.workingDirectory.trim()
+        : (server.workingDirectory || "/home/container");
+
+    let envVars: Record<string, string> = {};
+    if (body.envVars && typeof body.envVars === "object" && !Array.isArray(body.envVars)) {
+      for (const [key, value] of Object.entries(body.envVars as Record<string, unknown>)) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+          return NextResponse.json(
+            { success: false, error: { code: "INVALID_ENV_KEY", message: `Invalid environment variable name: ${key}` } },
+            { status: 400 }
+          );
+        }
+        if (typeof value !== "string") {
+          return NextResponse.json(
+            { success: false, error: { code: "INVALID_ENV_VALUE", message: `Environment variable ${key} must be a string` } },
+            { status: 400 }
+          );
+        }
+        envVars[key] = value;
+      }
+    } else {
+      envVars = (server.envVars as Record<string, string>) || {};
+    }
+
+    // Startup changes are persisted even when the server is offline. If a
+    // process is currently running, stop it first so the new configuration
+    // cannot be mixed with the old process.
+    if (getServerMetrics(id).status !== "stopped") {
+      await stopServer(id);
+    }
+
+    await db
+      .update(servers)
+      .set({
+        dockerImage,
+        startupCommand,
+        workingDirectory,
+        envVars,
+        status: "stopped",
+        pid: 0,
+        updatedAt: new Date(),
+      })
+      .where(eq(servers.id, id));
+
+    await createAuditLog(session.id, "server.startup.update", {
+      serverId: id,
+      dockerImage,
+      startupCommand,
+      workingDirectory,
+    }).catch((error) => {
+      console.warn(`[Birdserver] startup audit log skipped for ${id}:`, error);
+    });
+
+    return NextResponse.json({
+      success: true,
+      message: "Startup configuration saved successfully. Press START to apply it.",
+      data: {
+        id,
+        dockerImage,
+        startupCommand,
+        workingDirectory,
+        envVars,
+        status: "stopped",
+      },
+    });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return NextResponse.json(
+      { success: false, error: { code: "STARTUP_UPDATE_FAILED", message } },
+      { status: 500 }
+    );
+  }
+}
+
 export async function DELETE(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
