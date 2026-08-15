@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Sidebar } from "@/components/layout/Sidebar";
-import { Rocket, UserPlus, Server, Shield } from "lucide-react";
+import { Rocket, UserPlus, Server } from "lucide-react";
 
 export default function AdminProvisionPage() {
   const [user, setUser] = useState<any>(null);
@@ -110,19 +110,10 @@ export default function AdminProvisionPage() {
         </form>
 
         {errorMessage && (
-          <div className="bg-zinc-950/90 border border-red-500/30 rounded-3xl p-6 backdrop-blur space-y-4">
-            <div>
-              <h3 className="text-base font-bold text-red-400">Create manual gagal</h3>
-              <p className="mt-2 text-sm text-zinc-300">Jika create manual eror sihlakan create di bot ini @aksesbotmuv1_bot</p>
-            </div>
-            <a
-              href="https://t.me/aksesbotmuv1_bot"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center justify-center px-4 py-2.5 rounded-xl bg-white text-black font-bold text-xs hover:bg-zinc-200"
-            >
-              Create Instan di Telegram
-            </a>
+          <div className="bg-zinc-950/90 border border-red-500/30 rounded-3xl p-6 backdrop-blur">
+            <h3 className="text-base font-bold text-red-400">Create manual gagal</h3>
+            <p className="mt-2 text-sm text-zinc-300 break-words">{errorMessage}</p>
+            <p className="mt-2 text-xs text-zinc-500">Perbaiki node/template/allocation atau data akun sesuai pesan error di atas, lalu coba lagi.</p>
           </div>
         )}
 

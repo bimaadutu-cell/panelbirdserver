@@ -1,7 +1,6 @@
 import fs from "fs";
 import path from "path";
 import { spawn, execSync } from "child_process";
-import { createHash } from "crypto";
 import AdmZip from "adm-zip";
 import { db } from "@/db";
 import { servers, backups, templates } from "@/db/schema";
@@ -31,7 +30,7 @@ interface RuntimeState {
   pid?: number | null;
 }
 
-export const DEFAULT_NODE_STARTUP_COMMAND = 'node /home/container/${MAIN_FILE}';
+export const DEFAULT_NODE_STARTUP_COMMAND = 'if [[ -d .git ]] && [[ "{{AUTO_UPDATE}}" == "1" ]]; then git pull; fi; if [[ ! -z "${NODE_PACKAGES}" ]]; then /usr/local/bin/npm install ${NODE_PACKAGES}; fi; if [[ ! -z "${UNNODE_PACKAGES}" ]]; then /usr/local/bin/npm uninstall ${UNNODE_PACKAGES}; fi; if [ -f /home/container/package.json ]; then /usr/local/bin/npm install; fi; /usr/local/bin/node /home/container/${MAIN_FILE}';
 
 function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
@@ -80,205 +79,6 @@ const hostBinaries = {
   bash: detectHostBinary("bash", "/bin/bash"),
 };
 
-interface RuntimeBinaries {
-  node: string;
-  npm: string;
-  npx: string;
-  binDir: string;
-  version: string;
-}
-
-function inferNodeVersionFromImage(image?: string | null) {
-  const match = String(image || "").match(/(?:^|\/)node[:\-]?(\d+)(?:[.\d]*)?/i);
-  return match?.[1] || "";
-}
-
-function normalizeNodeVersion(value?: string | null, image?: string | null, category?: string) {
-  const explicit = String(value || "").trim().toLowerCase().replace(/^v/, "");
-  if (explicit && explicit !== "system" && /^\d+(?:\.\d+){0,2}$/.test(explicit)) return explicit;
-  const imageVersion = inferNodeVersionFromImage(image);
-  if (imageVersion) return imageVersion;
-  if (/telegram|whatsapp|node/i.test(category || "")) return "23";
-  return "system";
-}
-
-function getNodeArch() {
-  const arch = execSync("uname -m", { encoding: "utf-8" }).trim();
-  if (arch === "x86_64" || arch === "amd64") return "x64";
-  if (arch === "aarch64" || arch === "arm64") return "arm64";
-  throw new Error(`Unsupported Linux architecture: ${arch}`);
-}
-
-function getNodeRuntimeDir(serverId: string, version: string) {
-  return getSecurePath(serverId, `.birdserver-runtime/node-v${version}`);
-}
-
-async function ensureNodeRuntime(serverId: string, version: string): Promise<RuntimeBinaries> {
-  if (version === "system") {
-    return {
-      node: hostBinaries.node,
-      npm: hostBinaries.npm,
-      npx: hostBinaries.npx,
-      binDir: path.dirname(hostBinaries.node),
-      version: execSync(`${shellQuote(hostBinaries.node)} -p process.versions.node`, { encoding: "utf-8" }).trim(),
-    };
-  }
-
-  const major = Number(version.split(".")[0]);
-  if (!Number.isInteger(major) || major < 18 || major > 25) {
-    throw new Error(`Unsupported Node.js runtime version: ${version}. Use system or a Node.js major from 18 to 25.`);
-  }
-
-  const runtimeVersion = version.includes(".") ? version : ({
-    18: "18.20.8",
-    20: "20.20.2",
-    22: "22.23.2",
-    23: "23.11.1",
-    24: "24.18.1",
-    25: "25.9.0",
-  } as Record<number, string>)[major] || version;
-
-  const arch = getNodeArch();
-  const runtimeDir = getNodeRuntimeDir(serverId, runtimeVersion);
-  const nodeBin = path.join(runtimeDir, "bin", "node");
-  const npmBin = path.join(runtimeDir, "bin", "npm");
-  const npxBin = path.join(runtimeDir, "bin", "npx");
-
-  const validateRuntime = () => {
-    if (!fs.existsSync(nodeBin) || !fs.existsSync(npmBin)) return false;
-    try {
-      const actual = execSync(`${shellQuote(nodeBin)} -p process.versions.node`, {
-        encoding: "utf-8",
-        env: { ...process.env, PATH: buildRuntimePath(path.dirname(nodeBin)) },
-      }).trim();
-      return actual === runtimeVersion;
-    } catch {
-      return false;
-    }
-  };
-
-  if (!validateRuntime()) {
-    const tmpRoot = path.join(getRuntimeDirectory(serverId), `node-download-${runtimeVersion}-${arch}`);
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
-    fs.mkdirSync(tmpRoot, { recursive: true });
-
-    // IMPORTANT: always use the official Node.js hostname.
-    const baseUrls = [
-      `https://nodejs.org/dist/v${runtimeVersion}`,
-      `https://nodejs.org/download/release/v${runtimeVersion}`,
-    ];
-    const archiveXz = `node-v${runtimeVersion}-linux-${arch}.tar.xz`;
-    const archiveGz = `node-v${runtimeVersion}-linux-${arch}.tar.gz`;
-
-    const download = (url: string, output: string) => {
-      const env = { ...process.env, PATH: buildRuntimePath(process.env.PATH) };
-      const curl = detectHostBinary("curl", "");
-      const wget = detectHostBinary("wget", "");
-      if (curl) {
-        execSync(
-          `${shellQuote(curl)} --fail --location --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 600 ${shellQuote(url)} --output ${shellQuote(output)}`,
-          { cwd: tmpRoot, env, stdio: "inherit" }
-        );
-        return;
-      }
-      if (wget) {
-        execSync(
-          `${shellQuote(wget)} --https-only --tries=3 --timeout=20 --server-response --output-document=${shellQuote(output)} ${shellQuote(url)}`,
-          { cwd: tmpRoot, env, stdio: "inherit" }
-        );
-        return;
-      }
-      throw new Error("Neither curl nor wget is available to download the selected Node.js runtime.");
-    };
-
-    let downloadedArchive = "";
-    let lastDownloadError = "";
-    for (const baseUrl of baseUrls) {
-      for (const archive of [archiveXz, archiveGz]) {
-        try {
-          const archivePath = path.join(tmpRoot, archive);
-          download(`${baseUrl}/${archive}`, archivePath);
-          downloadedArchive = archivePath;
-          break;
-        } catch (error) {
-          lastDownloadError = error instanceof Error ? error.message : String(error);
-          fs.rmSync(path.join(tmpRoot, archive), { force: true });
-        }
-      }
-      if (downloadedArchive) break;
-    }
-
-    if (!downloadedArchive) {
-      fs.rmSync(tmpRoot, { recursive: true, force: true });
-      throw new Error(
-        `Unable to download Node.js ${runtimeVersion} from the official Node.js servers. ` +
-        `Check Railway outbound DNS/HTTPS access. Last error: ${lastDownloadError}`
-      );
-    }
-
-    const sumsPath = path.join(tmpRoot, "SHASUMS256.txt");
-    let sumsDownloaded = false;
-    for (const baseUrl of baseUrls) {
-      try {
-        download(`${baseUrl}/SHASUMS256.txt`, sumsPath);
-        sumsDownloaded = true;
-        break;
-      } catch {
-        fs.rmSync(sumsPath, { force: true });
-      }
-    }
-    if (!sumsDownloaded) {
-      fs.rmSync(tmpRoot, { recursive: true, force: true });
-      throw new Error(`Downloaded Node.js ${runtimeVersion}, but could not download its official SHASUMS256.txt.`);
-    }
-
-    const archiveName = path.basename(downloadedArchive);
-    const expectedLine = fs.readFileSync(sumsPath, "utf-8")
-      .split(/\r?\n/)
-      .find((line) => line.trim().endsWith(`  ${archiveName}`) || line.trim().endsWith(` *${archiveName}`));
-
-    if (!expectedLine) {
-      fs.rmSync(tmpRoot, { recursive: true, force: true });
-      throw new Error(`Official checksum entry for ${archiveName} was not found.`);
-    }
-
-    const expected = expectedLine.trim().split(/\s+/)[0];
-    const actual = createHash("sha256").update(fs.readFileSync(downloadedArchive)).digest("hex");
-    if (actual !== expected) {
-      fs.rmSync(tmpRoot, { recursive: true, force: true });
-      throw new Error(`Node.js runtime checksum mismatch for ${archiveName}.`);
-    }
-
-    fs.rmSync(runtimeDir, { recursive: true, force: true });
-    fs.mkdirSync(path.dirname(runtimeDir), { recursive: true });
-
-    const tarArgs = downloadedArchive.endsWith(".tar.xz")
-      ? `-xJf ${shellQuote(downloadedArchive)}`
-      : `-xzf ${shellQuote(downloadedArchive)}`;
-    execSync(`tar ${tarArgs} -C ${shellQuote(tmpRoot)}`, { cwd: tmpRoot, stdio: "inherit" });
-
-    const extracted = path.join(tmpRoot, `node-v${runtimeVersion}-linux-${arch}`);
-    if (!fs.existsSync(extracted)) {
-      fs.rmSync(tmpRoot, { recursive: true, force: true });
-      throw new Error(`Node.js archive extracted successfully, but expected directory was missing.`);
-    }
-
-    fs.renameSync(extracted, runtimeDir);
-    fs.rmSync(tmpRoot, { recursive: true, force: true });
-  }
-
-  if (!validateRuntime()) {
-    throw new Error(`Node.js ${runtimeVersion} runtime is present but failed its version validation.`);
-  }
-
-  const actualVersion = execSync(`${shellQuote(nodeBin)} -p process.versions.node`, {
-    encoding: "utf-8",
-    env: { ...process.env, PATH: buildRuntimePath(path.dirname(nodeBin)) },
-  }).trim();
-
-  return { node: nodeBin, npm: npmBin, npx: npxBin, binDir: path.dirname(nodeBin), version: actualVersion };
-}
-
 function detectMainFile(serverRoot: string) {
   const candidates = ["index.js", "app.js", "server.js", "main.js", "dist/index.js", "src/index.js"];
 
@@ -309,15 +109,11 @@ export function getDefaultServerEnv(templateCategory: string, projectRootPath?: 
     UNNODE_PACKAGES: "",
     MAIN_FILE: defaultMainFile,
     NODE_RUNTIME_VERSION: "system",
-    PYTHON_PACKAGES: "",
-    OS_PACKAGES: "",
-    npm_config_include: "dev",
   };
 
   if (/telegram bot/i.test(templateCategory)) {
     return {
       ...baseEnv,
-      NODE_RUNTIME_VERSION: "22",
       BOT_TOKEN: "",
     };
   }
@@ -325,7 +121,6 @@ export function getDefaultServerEnv(templateCategory: string, projectRootPath?: 
   if (/whatsapp bot/i.test(templateCategory)) {
     return {
       ...baseEnv,
-      NODE_RUNTIME_VERSION: "22",
       SESSION_NAME: "birdserver-wa-session",
     };
   }
@@ -333,13 +128,28 @@ export function getDefaultServerEnv(templateCategory: string, projectRootPath?: 
   return baseEnv;
 }
 
-function normalizeStartupCommand(rawCommand: string, projectRootPath: string, runtime: RuntimeBinaries) {
+function resolveNodeExecutable(runtimeVersion?: string | null) {
+  const normalized = (runtimeVersion || "system").trim().toLowerCase();
+  if (!normalized || normalized === "system") {
+    return hostBinaries.node;
+  }
+
+  const version = normalized.replace(/^v/, "");
+  if (/^\d+$/.test(version)) {
+    return `${hostBinaries.npx} -y node@${version}`;
+  }
+
+  return hostBinaries.node;
+}
+
+function normalizeStartupCommand(rawCommand: string, projectRootPath: string, runtimeVersion?: string | null) {
+  const nodeExecutable = resolveNodeExecutable(runtimeVersion);
   return rawCommand
     .replaceAll("/home/container", projectRootPath)
-    .replaceAll("/usr/local/bin/node", runtime.node)
-    .replaceAll("/usr/bin/node", runtime.node)
-    .replaceAll("/usr/local/bin/npm", runtime.npm)
-    .replaceAll("/usr/bin/npm", runtime.npm)
+    .replaceAll("/usr/local/bin/node", nodeExecutable)
+    .replaceAll("/usr/bin/node", nodeExecutable)
+    .replaceAll("/usr/local/bin/npm", hostBinaries.npm)
+    .replaceAll("/usr/bin/npm", hostBinaries.npm)
     .replace(/\{\{\s*([A-Z0-9_]+)\s*\}\}/g, "${$1}");
 }
 
@@ -679,49 +489,28 @@ export async function startServer(serverId: string): Promise<boolean> {
   const runtimeWorkingDirectory = resolveRuntimeWorkingDirectory(serverRoot, server.workingDirectory);
   const runtimeContainerAlias = prepareRuntimeContainerAlias(serverId, runtimeWorkingDirectory);
 
-  const initialEnv = {
-    ...getDefaultServerEnv(templateCategory, runtimeWorkingDirectory),
-    ...((server.envVars as Record<string, string>) || {}),
-  };
-  const selectedNodeVersion = normalizeNodeVersion(initialEnv.NODE_RUNTIME_VERSION, server.dockerImage, templateCategory);
-  const runtime = await ensureNodeRuntime(serverId, selectedNodeVersion);
-
   const runtimeEnv: NodeJS.ProcessEnv = {
     ...process.env,
-    ...initialEnv,
+    ...getDefaultServerEnv(templateCategory, runtimeWorkingDirectory),
+    ...((server.envVars as Record<string, string>) || {}),
     SERVER_ID: server.id,
     BIRDSERVER: "V1",
     NODE_ENV: process.env.NODE_ENV || "production",
     PWD: runtimeWorkingDirectory,
     HOME: serverRoot,
-    PATH: [runtime.binDir, buildRuntimePath(process.env.PATH)].filter(Boolean).join(":"),
-    NODE_RUNTIME_VERSION: selectedNodeVersion,
+    PATH: buildRuntimePath(process.env.PATH),
   };
 
   if (!runtimeEnv.MAIN_FILE) runtimeEnv.MAIN_FILE = detectMainFile(runtimeWorkingDirectory);
   if (!runtimeEnv.AUTO_UPDATE) runtimeEnv.AUTO_UPDATE = "0";
   if (!runtimeEnv.NODE_PACKAGES) runtimeEnv.NODE_PACKAGES = "";
   if (!runtimeEnv.UNNODE_PACKAGES) runtimeEnv.UNNODE_PACKAGES = "";
-  if (!runtimeEnv.npm_config_include) runtimeEnv.npm_config_include = "dev";
 
-  const rawStartupCommand = (server.startupCommand || DEFAULT_NODE_STARTUP_COMMAND).trim();
-  const normalizedStartupCommand = normalizeStartupCommand(rawStartupCommand, runtimeContainerAlias, runtime);
-
-  // Always perform real dependency installation on the host before starting
-  // the uploaded project. This is intentionally not a fake/simulated status:
-  // npm/pip/apt commands execute against the actual Railway runtime filesystem.
-  const hasExplicitNodeInstall = /\bnpm\s+(?:install|ci)\b/.test(rawStartupCommand);
-  const dependencyBootstrap = [
-    'set -e',
-    `echo '[Birdserver] Node runtime: ${runtime.version} (selected=${selectedNodeVersion})'`,
-    `if [[ -f package.json ]] && ${hasExplicitNodeInstall ? 'false' : 'true'}; then if ! command -v ${shellQuote(runtime.npm)} >/dev/null 2>&1; then echo '[Birdserver] npm is unavailable for the selected Node runtime.'; exit 127; fi; ${shellQuote(runtime.npm)} install --no-audit --no-fund --prefer-online; fi`,
-    'if [[ ! -z "${NODE_PACKAGES}" ]]; then ' + shellQuote(runtime.npm) + ' install --no-audit --no-fund ${NODE_PACKAGES}; fi',
-    'if [[ ! -z "${UNNODE_PACKAGES}" ]]; then ' + shellQuote(runtime.npm) + ' uninstall ${UNNODE_PACKAGES}; fi',
-    `if [[ -f requirements.txt ]]; then if ! command -v python3 >/dev/null 2>&1; then echo '[Birdserver] requirements.txt exists but python3 is unavailable.'; exit 127; fi; python3 -m pip install --no-input -r requirements.txt || python3 -m pip install --no-input --user -r requirements.txt; fi`,
-    'if [[ ! -z "${PYTHON_PACKAGES}" ]]; then if ! command -v python3 >/dev/null 2>&1; then echo "[Birdserver] PYTHON_PACKAGES requested but python3 is unavailable."; exit 127; fi; python3 -m pip install --no-input --user ${PYTHON_PACKAGES} || python3 -m pip install --no-input ${PYTHON_PACKAGES}; fi',
-    'if [[ ! -z "${OS_PACKAGES}" ]]; then if ! command -v apt-get >/dev/null 2>&1 || [[ "$(id -u)" != "0" ]]; then echo "[Birdserver] OS_PACKAGES requested, but apt-get/root access is unavailable on this host."; exit 126; fi; DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${OS_PACKAGES}; fi',
-  ].join('; ');
-  const finalStartupCommand = `${dependencyBootstrap}; ${normalizedStartupCommand}`;
+  const finalStartupCommand = normalizeStartupCommand(
+    server.startupCommand,
+    runtimeContainerAlias,
+    runtimeEnv.NODE_RUNTIME_VERSION
+  );
 
   const { inputLogPath, outputLogPath } = getServerConsolePaths(serverId);
   fs.writeFileSync(inputLogPath, "", "utf-8");
@@ -731,41 +520,14 @@ export async function startServer(serverId: string): Promise<boolean> {
     "utf-8"
   );
 
-  // IMPORTANT: do not keep the console tail process as part of the runtime
-  // process group. The old implementation used `tail -F | bash -lc ...`,
-  // which could keep the server marked RUNNING forever after the bot crashed.
-  // The FIFO feeds live console commands while the actual startup command
-  // remains the lifetime of the tracked PID.
-  const inputPipePath = path.join(getRuntimeDirectory(serverId), "console-input.pipe");
-  try {
-    if (fs.existsSync(inputPipePath)) fs.rmSync(inputPipePath, { force: true });
-  } catch {}
-
-  // A real FIFO keeps console input usable across HTTP requests without
-  // making `tail -F` the tracked server PID. The trap removes the feeder
-  // process and FIFO when the actual bot exits.
-  const command = [
-    `mkfifo -m 600 ${shellQuote(inputPipePath)}`,
-    `trap 'kill "$feeder" 2>/dev/null || true; rm -f ${shellQuote(inputPipePath)}' EXIT TERM INT`,
-    `tail -n 0 -F ${shellQuote(inputLogPath)} > ${shellQuote(inputPipePath)} & feeder=$!`,
-    `${hostBinaries.bash} -lc ${shellQuote(finalStartupCommand)} < ${shellQuote(inputPipePath)} >> ${shellQuote(outputLogPath)} 2>&1`,
-  ].join("; ");
+  const command = `tail -n 0 -F ${shellQuote(inputLogPath)} | ${hostBinaries.bash} -lc ${shellQuote(finalStartupCommand)} >> ${shellQuote(outputLogPath)} 2>&1`;
   const child = spawn(hostBinaries.bash, ["-lc", command], {
     cwd: runtimeWorkingDirectory,
     env: runtimeEnv,
     detached: true,
-    stdio: ["ignore", "ignore", "ignore"],
+    stdio: "ignore",
   });
 
-  child.on("exit", (code, signal) => {
-    const exitMessage = `[Birdserver] Runtime exited (code=${code ?? "null"}, signal=${signal ?? "none"}).`;
-    appendConsoleOutput(serverId, exitMessage);
-    writeRuntimeState(serverId, { lastExitAt: new Date().toISOString(), pid: null });
-    void db.update(servers)
-      .set({ status: "stopped", pid: 0, updatedAt: new Date() })
-      .where(eq(servers.id, serverId))
-      .catch((error) => console.warn(`[Birdserver] Exit status sync skipped for ${serverId}:`, error));
-  });
   child.unref();
 
   // Persist runtime state first. The process itself is the source of truth
@@ -790,7 +552,6 @@ export async function startServer(serverId: string): Promise<boolean> {
   }
 
   appendConsoleOutput(serverId, `[Birdserver] Detached runtime started with PID ${runtimePid}`);
-  appendConsoleOutput(serverId, `[Birdserver] Dependency mode: real host runtime (npm/pip/OS packages where available).`);
   return true;
 }
 

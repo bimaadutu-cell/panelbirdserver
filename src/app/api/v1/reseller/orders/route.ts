@@ -107,7 +107,7 @@ export async function POST(req: Request) {
       userId: customerId,
       resellerId: session.id,
       nodeId: "node_01",
-      dockerImage: "node:23-alpine",
+      dockerImage: "node:20-alpine",
       startupCommand: "node index.js",
       memoryMb: pkg.memoryMb,
       cpuPercent: pkg.cpuPercent,
