@@ -87,6 +87,8 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
   const [clearingLogs, setClearingLogs] = useState(false);
 
   const consoleEndRef = useRef<HTMLDivElement>(null);
+  const pendingLinesRef = useRef<string[]>([]);
+  const flushFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
     let eventSource: EventSource | null = null;
@@ -98,7 +100,20 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
       eventSource.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          if (data.line) setLogs((prev) => [...prev.slice(-1200), data.line]);
+          if (!data.line) return;
+
+          // npm can emit hundreds/thousands of lines in a few seconds.
+          // Queue them and commit once per animation frame instead of causing
+          // a React render + QR/log parsing pass for every single line.
+          pendingLinesRef.current.push(String(data.line));
+          if (flushFrameRef.current !== null) return;
+
+          flushFrameRef.current = requestAnimationFrame(() => {
+            flushFrameRef.current = null;
+            const incoming = pendingLinesRef.current.splice(0);
+            if (!incoming.length) return;
+            setLogs((prev) => [...prev, ...incoming].slice(-600));
+          });
         } catch (e) {
           console.error("Error parsing log line:", e);
         }
@@ -111,7 +126,14 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
     };
 
     connectLogs();
-    return () => eventSource?.close();
+    return () => {
+      eventSource?.close();
+      if (flushFrameRef.current !== null) {
+        cancelAnimationFrame(flushFrameRef.current);
+        flushFrameRef.current = null;
+      }
+      pendingLinesRef.current = [];
+    };
   }, [serverId]);
 
   const { visibleLogs, asciiQrLines, qrPayload } = useMemo(() => {
@@ -179,7 +201,7 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
 
   useEffect(() => {
     if (autoScroll && consoleEndRef.current) {
-      consoleEndRef.current.scrollIntoView({ behavior: "smooth" });
+      consoleEndRef.current.scrollIntoView({ behavior: "auto", block: "end" });
     }
   }, [visibleLogs, autoScroll]);
 

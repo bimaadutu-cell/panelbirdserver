@@ -4,9 +4,26 @@ import { authorizeServerRequest } from "@/lib/server-access";
 import { getServerConsolePaths } from "@/lib/agent/engine";
 
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
+const MAX_INITIAL_BYTES = 128 * 1024;
 
 function getLastLines(text: string, count: number) {
   return text.split(/\r?\n/).filter(Boolean).slice(-count);
+}
+
+async function readTail(filePath: string, maxBytes = MAX_INITIAL_BYTES) {
+  const handle = await fs.promises.open(filePath, "r");
+  try {
+    const stat = await handle.stat();
+    const start = Math.max(0, stat.size - maxBytes);
+    const length = Math.max(0, stat.size - start);
+    const buffer = Buffer.allocUnsafe(length);
+    if (length) await handle.read(buffer, 0, length, start);
+    return { text: buffer.toString("utf8"), size: stat.size };
+  } finally {
+    await handle.close();
+  }
 }
 
 export async function GET(
@@ -18,56 +35,88 @@ export async function GET(
   if (!auth.ok) return auth.response;
 
   const { outputLogPath } = getServerConsolePaths(id);
+  await fs.promises.mkdir(path.dirname(outputLogPath), { recursive: true });
 
-  fs.mkdirSync(path.dirname(outputLogPath), { recursive: true });
-  if (!fs.existsSync(outputLogPath)) {
-    fs.writeFileSync(outputLogPath, "[Birdserver] Server is currently offline.\n", "utf-8");
+  try {
+    await fs.promises.access(outputLogPath);
+  } catch {
+    await fs.promises.writeFile(
+      outputLogPath,
+      "[Birdserver] Server is currently offline.\n",
+      "utf8"
+    );
   }
 
   const encoder = new TextEncoder();
-  let lastSize = fs.statSync(outputLogPath).size;
+  const initial = await readTail(outputLogPath);
+  let lastSize = initial.size;
 
   const stream = new ReadableStream({
     start(controller) {
-      const initialText = fs.readFileSync(outputLogPath, "utf-8");
-      for (const line of getLastLines(initialText, 200)) {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ line })}\n\n`));
-      }
+      let closed = false;
+      let polling = false;
 
-      const interval = setInterval(() => {
+      const sendLine = (line: string) => {
+        if (closed || !line) return;
         try {
-          const stats = fs.statSync(outputLogPath);
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify({ line })}\n\n`)
+          );
+        } catch {
+          closed = true;
+        }
+      };
+
+      for (const line of getLastLines(initial.text, 160)) sendLine(line);
+
+      const interval = setInterval(async () => {
+        if (closed || polling) return;
+        polling = true;
+
+        try {
+          const stats = await fs.promises.stat(outputLogPath);
           if (stats.size < lastSize) lastSize = 0;
 
           if (stats.size > lastSize) {
-            const fd = fs.openSync(outputLogPath, "r");
-            const buffer = Buffer.alloc(stats.size - lastSize);
-            fs.readSync(fd, buffer, 0, buffer.length, lastSize);
-            fs.closeSync(fd);
-            lastSize = stats.size;
+            const handle = await fs.promises.open(outputLogPath, "r");
+            try {
+              const length = stats.size - lastSize;
+              const buffer = Buffer.allocUnsafe(length);
+              await handle.read(buffer, 0, length, lastSize);
+              lastSize = stats.size;
 
-            const text = buffer.toString("utf-8");
-            for (const line of text.split(/\r?\n/).filter(Boolean)) {
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ line })}\n\n`));
+              for (const line of buffer.toString("utf8").split(/\r?\n/).filter(Boolean)) {
+                sendLine(line);
+              }
+            } finally {
+              await handle.close();
             }
           }
         } catch {
-          // ignore polling errors while file rotates
+          // Keep the stream alive through log rotation/restarts.
+        } finally {
+          polling = false;
         }
-      }, 700);
+      }, 350);
 
       req.signal.addEventListener("abort", () => {
+        if (closed) return;
+        closed = true;
         clearInterval(interval);
-        controller.close();
+        try { controller.close(); } catch {}
       });
+    },
+    cancel() {
+      // The request abort handler owns interval cleanup.
     },
   });
 
   return new Response(stream, {
     headers: {
-      "Content-Type": "text/event-stream",
+      "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
     },
   });
 }

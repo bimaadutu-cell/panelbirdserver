@@ -40,25 +40,29 @@ export default function ServerDetailPage({
   const [powerError, setPowerError] = useState<string | null>(null);
   const router = useRouter();
 
-  const fetchServerDetails = async () => {
+  const fetchServerDetails = async (includeUser = false, signal?: AbortSignal) => {
     try {
-      const meRes = await fetch("/api/auth/me", {
-        credentials: "include",
-        cache: "no-store",
-      });
-      const meData = await meRes.json().catch(() => null);
+      if (includeUser) {
+        const meRes = await fetch("/api/auth/me", {
+          credentials: "include",
+          cache: "no-store",
+          signal,
+        });
+        const meData = await meRes.json().catch(() => null);
 
-      if (!meRes.ok || !meData?.success) {
-        setLoadError(meData?.error?.message || "Session tidak valid. Silakan login kembali.");
-        if (meRes.status === 401) router.replace("/");
-        return;
+        if (!meRes.ok || !meData?.success) {
+          setLoadError(meData?.error?.message || "Session tidak valid. Silakan login kembali.");
+          if (meRes.status === 401) router.replace("/");
+          return;
+        }
+
+        setUser(meData.data.user);
       }
-
-      setUser(meData.data.user);
 
       const srvRes = await fetch(`/api/v1/servers/${encodeURIComponent(id)}`, {
         credentials: "include",
         cache: "no-store",
+        signal,
       });
       const srvData = await srvRes.json().catch(() => null);
 
@@ -69,31 +73,51 @@ export default function ServerDetailPage({
         setLoadError("Sesi login telah berakhir. Silakan login kembali.");
         router.replace("/");
       } else if (srvRes.status === 404) {
-        // A real 404 means the resource is gone; keep the current UI if this
-        // is only a background poll so a transient response cannot blank the page.
         if (!server) setServer(null);
         setLoadError("Server tidak ditemukan di database.");
       } else {
-        // Never replace an already-rendered server with a transient polling error.
-        // The next poll can recover automatically.
         setLoadError(
-          srvData?.error?.message ||
-          `Gagal memuat server (HTTP ${srvRes.status}).`
+          srvData?.error?.message || `Gagal memuat server (HTTP ${srvRes.status}).`
         );
       }
-    } catch (err) {
-      console.error("[Birdserver] server detail load failed:", err);
-      setLoadError("Koneksi ke server gagal. Mencoba lagi...");
+    } catch (err: any) {
+      if (err?.name !== "AbortError") {
+        console.error("[Birdserver] server detail load failed:", err);
+        setLoadError("Koneksi ke server gagal. Mencoba lagi...");
+      }
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    fetchServerDetails();
-    const interval = setInterval(fetchServerDetails, 3000);
-    return () => clearInterval(interval);
+    const controller = new AbortController();
+    let active = true;
+    let busy = false;
+
+    const load = async (includeUser = false) => {
+      if (!active || busy) return;
+      busy = true;
+      try {
+        await fetchServerDetails(includeUser, controller.signal);
+      } finally {
+        busy = false;
+      }
+    };
+
+    void load(true);
+
+    // The detail endpoint is intentionally light now. Five-second polling
+    // avoids competing with a busy npm install while still feeling live.
+    const interval = setInterval(() => void load(false), 5000);
+
+    return () => {
+      active = false;
+      controller.abort();
+      clearInterval(interval);
+    };
   }, [id]);
+
 
   const handlePowerAction = async (action: "start" | "stop" | "restart" | "kill") => {
     setPowerError(null);
@@ -105,7 +129,7 @@ export default function ServerDetailPage({
       });
       const data = await res.json();
       if (data.success) {
-        await fetchServerDetails();
+        await fetchServerDetails(false);
       } else {
         setPowerError(data.error?.message || "Power action failed");
       }
@@ -202,10 +226,10 @@ export default function ServerDetailPage({
 
         {/* Live Gauges */}
         <ServerMetricsGauge
-          serverId={server.id}
           memoryMb={server.memoryMb}
           cpuPercent={server.cpuPercent}
           diskMb={server.diskMb}
+          metrics={server.metrics}
         />
 
         {/* Tabs Bar */}

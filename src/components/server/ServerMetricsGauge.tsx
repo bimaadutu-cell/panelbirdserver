@@ -5,43 +5,31 @@ import { Cpu, HardDrive, Server as ServerIcon, Clock, Activity, ShieldCheck } fr
 import { formatBytes } from "@/lib/utils";
 
 interface ServerMetricsGaugeProps {
-  serverId: string;
   memoryMb: number;
   cpuPercent: number;
   diskMb: number;
+  metrics?: {
+    status?: string;
+    cpuPercent?: number;
+    memoryBytes?: number;
+    diskBytes?: number;
+    uptimeSeconds?: number;
+  };
 }
 
 export function ServerMetricsGauge({
-  serverId,
   memoryMb,
   cpuPercent,
   diskMb,
+  metrics: liveMetrics,
 }: ServerMetricsGaugeProps) {
-  const [metrics, setMetrics] = useState({
-    status: "stopped",
-    cpuPercent: 0,
-    memoryBytes: 0,
-    diskBytes: 0,
-    uptimeSeconds: 0,
-  });
-
-  useEffect(() => {
-    const fetchMetrics = async () => {
-      try {
-        const res = await fetch(`/api/v1/servers/${serverId}/metrics`);
-        const data = await res.json();
-        if (data.success && data.data) {
-          setMetrics(data.data);
-        }
-      } catch (err) {
-        console.error(err);
-      }
-    };
-
-    fetchMetrics();
-    const interval = setInterval(fetchMetrics, 3000);
-    return () => clearInterval(interval);
-  }, [serverId]);
+  const metrics = {
+    status: liveMetrics?.status || "stopped",
+    cpuPercent: liveMetrics?.cpuPercent || 0,
+    memoryBytes: liveMetrics?.memoryBytes || 0,
+    diskBytes: liveMetrics?.diskBytes || 0,
+    uptimeSeconds: liveMetrics?.uptimeSeconds || 0,
+  };
 
   const maxMemBytes = memoryMb * 1024 * 1024;
   const memUsagePercent = maxMemBytes > 0 ? Math.min(100, Math.round((metrics.memoryBytes / maxMemBytes) * 100)) : 0;

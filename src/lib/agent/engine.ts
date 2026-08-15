@@ -711,10 +711,17 @@ export async function startServer(serverId: string): Promise<boolean> {
   // the uploaded project. This is intentionally not a fake/simulated status:
   // npm/pip/apt commands execute against the actual Railway runtime filesystem.
   const hasExplicitNodeInstall = /\bnpm\s+(?:install|ci)\b/.test(rawStartupCommand);
+  const dependencyStatePath = path.join(getRuntimeDirectory(serverId), "dependency-state.txt");
+  const dependencyStateShellPath = shellQuote(dependencyStatePath);
+  const npmInstall = `if command -v nice >/dev/null 2>&1; then nice -n 10 ${shellQuote(runtime.npm)} install --no-audit --no-fund --prefer-online; else ${shellQuote(runtime.npm)} install --no-audit --no-fund --prefer-online; fi`;
+
   const dependencyBootstrap = [
     'set -e',
     `echo '[Birdserver] Node runtime: ${runtime.version} (selected=${selectedNodeVersion})'`,
-    `if [[ -f package.json ]] && ${hasExplicitNodeInstall ? 'false' : 'true'}; then if ! command -v ${shellQuote(runtime.npm)} >/dev/null 2>&1; then echo '[Birdserver] npm is unavailable for the selected Node runtime.'; exit 127; fi; ${shellQuote(runtime.npm)} install --no-audit --no-fund --prefer-online; fi`,
+    // Do not run a full npm install on every restart. This is one of the
+    // biggest sources of unnecessary CPU/network contention on a shared host.
+    // Install only when node_modules is missing or package metadata changed.
+    `if [[ -f package.json ]] && ${hasExplicitNodeInstall ? 'false' : 'true'}; then if ! command -v ${shellQuote(runtime.npm)} >/dev/null 2>&1; then echo '[Birdserver] npm is unavailable for the selected Node runtime.'; exit 127; fi; DEP_SIG="$(stat -c '%Y:%s' package.json 2>/dev/null || true):$(stat -c '%Y:%s' package-lock.json 2>/dev/null || true):$(stat -c '%Y:%s' npm-shrinkwrap.json 2>/dev/null || true)"; NEED_NPM=0; if [[ ! -d node_modules || ! -f ${dependencyStateShellPath} || "$(cat ${dependencyStateShellPath} 2>/dev/null || true)" != "$DEP_SIG" ]]; then NEED_NPM=1; fi; if [[ "$NEED_NPM" == "1" ]]; then echo '[Birdserver] Installing Node dependencies (background-safe mode)...'; ${npmInstall}; printf '%s' "$DEP_SIG" > ${dependencyStateShellPath}; else echo '[Birdserver] Dependencies already up to date; skipping npm install.'; fi; fi`,
     'if [[ ! -z "${NODE_PACKAGES}" ]]; then ' + shellQuote(runtime.npm) + ' install --no-audit --no-fund ${NODE_PACKAGES}; fi',
     'if [[ ! -z "${UNNODE_PACKAGES}" ]]; then ' + shellQuote(runtime.npm) + ' uninstall ${UNNODE_PACKAGES}; fi',
     `if [[ -f requirements.txt ]]; then if ! command -v python3 >/dev/null 2>&1; then echo '[Birdserver] requirements.txt exists but python3 is unavailable.'; exit 127; fi; python3 -m pip install --no-input -r requirements.txt || python3 -m pip install --no-input --user -r requirements.txt; fi`,
@@ -881,66 +888,136 @@ export async function sendCommandToServer(serverId: string, command: string): Pr
   return true;
 }
 
+interface CachedMetrics {
+  value: {
+    status: "running" | "stopped";
+    cpuPercent: number;
+    memoryBytes: number;
+    diskBytes: number;
+    uptimeSeconds: number;
+  };
+  expiresAt: number;
+  refreshing: boolean;
+}
+
+const metricsCache = new Map<string, CachedMetrics>();
+
+function calculateDiskBytesFast(serverRoot: string): Promise<number> {
+  return new Promise((resolve) => {
+    const { execFile } = require("child_process") as typeof import("child_process");
+    execFile("du", ["-sb", "--", serverRoot], {
+      timeout: 15000,
+      maxBuffer: 1024 * 1024,
+    }, (error, stdout) => {
+      if (error) return resolve(0);
+      const bytes = Number(String(stdout).trim().split(/\s+/)[0]);
+      resolve(Number.isFinite(bytes) ? bytes : 0);
+    });
+  });
+}
+
+function collectMetricsAsync(serverId: string): Promise<CachedMetrics["value"]> {
+  return new Promise(async (resolve) => {
+    const serverRoot = getServerDirectory(serverId);
+    const state = readRuntimeState(serverId);
+    const pid = state.pid ?? null;
+
+    if (!pid || !isPidAlive(pid)) {
+      resolve({
+        status: "stopped",
+        cpuPercent: 0,
+        memoryBytes: 0,
+        diskBytes: await calculateDiskBytesFast(serverRoot),
+        uptimeSeconds: 0,
+      });
+      return;
+    }
+
+    const { execFile } = require("child_process") as typeof import("child_process");
+    // Do not synchronously walk the whole process tree on every poll.\n    // The tracked runtime PID is enough for the hot metrics path.\n    const treePids = [pid];\n    const diskPromise = calculateDiskBytesFast(serverRoot);
+
+    execFile(
+      "ps",
+      ["-o", "pid=,rss=,%cpu=", "-p", treePids.join(",")],
+      { timeout: 5000, maxBuffer: 1024 * 1024 },
+      async (_error, stdout) => {
+        let memoryBytes = 0;
+        let cpuPercent = 0;
+
+        for (const line of String(stdout || "").split("\n").map((v) => v.trim()).filter(Boolean)) {
+          const parts = line.split(/\s+/);
+          const rss = Number(parts[1] || 0);
+          const cpu = Number(parts[2] || 0);
+          if (Number.isFinite(rss)) memoryBytes += rss * 1024;
+          if (Number.isFinite(cpu)) cpuPercent += cpu;
+        }
+
+        const startedAt = state.startedAt ? new Date(state.startedAt).getTime() : Date.now();
+        const uptimeSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+
+        resolve({
+          status: "running",
+          cpuPercent: Math.round(cpuPercent),
+          memoryBytes,
+          diskBytes: await diskPromise,
+          uptimeSeconds,
+        });
+      }
+    );
+  });
+}
+
+/**
+ * Non-blocking metrics API.
+ *
+ * The old implementation recursively scanned the whole server directory and
+ * synchronously ran `ps` on every poll. A large `node_modules` install could
+ * therefore block the Next.js event loop and freeze the entire web panel.
+ * Metrics are now cached and refreshed in the background so API requests
+ * return immediately even while npm/pip is busy.
+ */
 export function getServerMetrics(serverId: string) {
-  const serverRoot = getServerDirectory(serverId);
-  let diskBytes = 0;
+  const now = Date.now();
+  const cached = metricsCache.get(serverId);
 
-  const calcDirSize = (dir: string): number => {
-    if (!fs.existsSync(dir)) return 0;
-    let total = 0;
-    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      const full = path.join(dir, entry.name);
-      if (entry.isDirectory()) total += calcDirSize(full);
-      else total += fs.statSync(full).size;
-    }
-    return total;
-  };
-
-  try {
-    diskBytes = calcDirSize(serverRoot);
-  } catch {
-    diskBytes = 0;
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
   }
 
-  const state = readRuntimeState(serverId);
-  const pid = state.pid ?? null;
+  const fallback = cached?.value || {
+    status: "stopped" as const,
+    cpuPercent: 0,
+    memoryBytes: 0,
+    diskBytes: 0,
+    uptimeSeconds: 0,
+  };
 
-  if (!pid || !isPidAlive(pid)) {
-    return {
-      status: "stopped",
-      cpuPercent: 0,
-      memoryBytes: 0,
-      diskBytes,
-      uptimeSeconds: 0,
+  if (!cached || !cached.refreshing) {
+    const entry: CachedMetrics = {
+      value: fallback,
+      expiresAt: now + 2000,
+      refreshing: true,
     };
+    metricsCache.set(serverId, entry);
+
+    void collectMetricsAsync(serverId)
+      .then((value) => {
+        metricsCache.set(serverId, {
+          value,
+          expiresAt: Date.now() + 2000,
+          refreshing: false,
+        });
+      })
+      .catch(() => {
+        metricsCache.set(serverId, {
+          value: fallback,
+          expiresAt: Date.now() + 2000,
+          refreshing: false,
+        });
+      });
   }
 
-  let memoryBytes = 0;
-  let cpuPercent = 0;
-
-  try {
-    const treePids = getProcessTreePids(pid);
-    const psOut = execSync(`ps -o pid=,rss=,%cpu= -p ${treePids.join(",")}`, { encoding: "utf-8" });
-    for (const line of psOut.split("\n").map((s) => s.trim()).filter(Boolean)) {
-      const [, rssStr, cpuStr] = line.split(/\s+/);
-      memoryBytes += Number(rssStr || 0) * 1024;
-      cpuPercent += Number(cpuStr || 0);
-    }
-  } catch {
-    memoryBytes = 0;
-    cpuPercent = 0;
-  }
-
-  const startedAt = state.startedAt ? new Date(state.startedAt).getTime() : Date.now();
-  const uptimeSeconds = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
-
-  return {
-    status: "running",
-    cpuPercent: Math.round(cpuPercent),
-    memoryBytes,
-    diskBytes,
-    uptimeSeconds,
-  };
+  return fallback;
 }
 
 export function listDirectoryFiles(serverId: string, relPath: string = ""): FileItem[] {
