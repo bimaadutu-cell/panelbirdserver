@@ -5,6 +5,7 @@ import { allocations, servers } from "@/db/schema";
 import { authorizeServerRequest } from "@/lib/server-access";
 import { getServerMetrics, stopServer } from "@/lib/agent/engine";
 import { createAuditLog } from "@/lib/audit";
+import { updateCompatibleServer } from "@/lib/legacy-db";
 
 /**
  * IMPORTANT: This route file must only export Next.js HTTP handlers.
@@ -128,18 +129,14 @@ export async function PATCH(
       await stopServer(id);
     }
 
-    await db
-      .update(servers)
-      .set({
-        dockerImage,
-        startupCommand,
-        workingDirectory,
-        envVars,
-        status: "stopped",
-        pid: 0,
-        updatedAt: new Date(),
-      })
-      .where(eq(servers.id, id));
+    await updateCompatibleServer(id, {
+      dockerImage,
+      startupCommand,
+      workingDirectory,
+      envVars,
+      status: "stopped",
+      pid: 0,
+    });
 
     await createAuditLog(session.id, "server.startup.update", {
       serverId: id,

@@ -198,3 +198,58 @@ export async function insertCompatibleReseller(input: {
   if (!id) throw new Error("Database did not return the created reseller ID");
   return id;
 }
+
+export async function updateCompatibleServer(
+  id: string,
+  input: {
+    dockerImage?: string;
+    startupCommand?: string;
+    workingDirectory?: string;
+    envVars?: Record<string, string>;
+    status?: string;
+    pid?: number;
+  }
+) {
+  const columns = await getTableColumns("servers");
+  const fields: string[] = [];
+  const values: unknown[] = [];
+  const push = (field: string, value: unknown) => {
+    if (!columns.has(field)) return;
+    fields.push(`"${field}" = $${fields.length + 1}`);
+    const colMeta = columns.get(field);
+    if (field === "env_vars") {
+      const valStr = typeof value === "string" ? value : JSON.stringify(value || {});
+      if (colMeta && ["text", "varchar"].includes(colMeta.data_type)) {
+        values.push(valStr);
+      } else {
+        values.push(value || {});
+      }
+    } else if (field === "updated_at") {
+      if (colMeta && ["text", "varchar"].includes(colMeta.data_type)) {
+        values.push(new Date().toISOString());
+      } else {
+        values.push(new Date());
+      }
+    } else {
+      values.push(normalizeDbValue(value, colMeta));
+    }
+  };
+
+  if (input.dockerImage !== undefined) push("docker_image", input.dockerImage);
+  if (input.startupCommand !== undefined) push("startup_command", input.startupCommand);
+  if (input.workingDirectory !== undefined) push("working_directory", input.workingDirectory);
+  if (input.envVars !== undefined) push("env_vars", input.envVars);
+  if (input.status !== undefined) {
+    const statusCol = columns.get("status");
+    const statusVal = statusCol?.udt_name === "server_status" ? input.status.toUpperCase() : input.status;
+    push("status", statusVal);
+  }
+  if (input.pid !== undefined) push("pid", input.pid);
+  push("updated_at", new Date());
+
+  if (fields.length === 0) return;
+
+  values.push(id);
+  const query = `update servers set ${fields.join(", ")} where id = $${values.length}`;
+  await pool.query(query, values);
+}

@@ -207,46 +207,9 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
 
   useEffect(() => {
     if (!autoScroll) return;
-
-    if (autoScrollRafRef.current !== null) {
-      cancelAnimationFrame(autoScrollRafRef.current);
-      autoScrollRafRef.current = null;
-    }
-
-    const container = consoleScrollRef.current;
-    if (!container) return;
-
-    // Native `behavior: smooth` calls can overlap when logs arrive rapidly.
-    // That causes the "jittery" scroll seen with fast bot output. Use one
-    // requestAnimationFrame loop with easing instead, so there is only ever
-    // one animation driving the console viewport.
-    let frame = 0;
-    const animate = () => {
-      const el = consoleScrollRef.current;
-      if (!el) return;
-      const target = Math.max(0, el.scrollHeight - el.clientHeight);
-      const distance = target - el.scrollTop;
-
-      if (Math.abs(distance) < 1) {
-        el.scrollTop = target;
-        autoScrollRafRef.current = null;
-        return;
-      }
-
-      el.scrollTop += distance * 0.22;
-      frame = requestAnimationFrame(animate);
-      autoScrollRafRef.current = frame;
-    };
-
-    frame = requestAnimationFrame(animate);
-    autoScrollRafRef.current = frame;
-
-    return () => {
-      cancelAnimationFrame(frame);
-      if (autoScrollRafRef.current === frame) {
-        autoScrollRafRef.current = null;
-      }
-    };
+    const el = consoleScrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
   }, [visibleLogs, autoScroll]);
 
   const handleSendCommand = async (e: React.FormEvent) => {
@@ -385,7 +348,7 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
           </div>
         </div>
 
-        <div ref={consoleScrollRef} className="flex-1 p-4 font-mono text-xs leading-relaxed overflow-y-auto scroll-smooth text-zinc-200 bg-black space-y-1 select-text">
+        <div ref={consoleScrollRef} className="flex-1 p-4 font-mono text-xs leading-relaxed overflow-y-auto text-zinc-200 bg-black space-y-1 select-text">
           {visibleLogs.length === 0 ? <div className="text-zinc-600 italic">Console output is empty. Press START to launch process.</div> : visibleLogs.map((line, idx) => <div key={idx} className={`whitespace-pre-wrap break-all hover:bg-zinc-900/40 px-1 rounded ${getLineClassName(line)}`}>{line}</div>)}
           <div ref={consoleEndRef} />
         </div>

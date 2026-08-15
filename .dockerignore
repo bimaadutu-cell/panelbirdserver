@@ -1,8 +1,0 @@
-node_modules
-.next
-*.tsbuildinfo
-tsconfig.tsbuildinfo
-.git
-.gitignore
-Dockerfile*
-npm-debug.log*
