@@ -231,8 +231,8 @@ async function ensureNodeRuntime(serverId: string, version: string): Promise<Run
   }
 
   const major = Number(version.split(".")[0]);
-  if (!Number.isInteger(major) || major < 18 || major > 25) {
-    throw new Error(`Unsupported Node.js runtime version: ${version}. Use system or a Node.js major from 18 to 25.`);
+  if (!Number.isInteger(major) || major < 18 || major > 26) {
+    throw new Error(`Unsupported Node.js runtime version: ${version}. Use system or a Node.js major from 18 to 26.`);
   }
 
   const runtimeVersion = version.includes(".") ? version : ({
@@ -242,6 +242,7 @@ async function ensureNodeRuntime(serverId: string, version: string): Promise<Run
     23: "23.11.1",
     24: "24.18.1",
     25: "25.9.0",
+    26: "26.1.0",
   } as Record<number, string>)[major] || version;
 
   const arch = getNodeArch();
@@ -907,8 +908,12 @@ process.exit(0);
     `      if ! command -v ${shellQuote(runtime.npm)} >/dev/null 2>&1; then echo '[Birdserver] npm is unavailable for the selected Node runtime.'; exit 127; fi`,
     `      if ! command -v timeout >/dev/null 2>&1; then echo '[Birdserver] timeout utility is unavailable on this host.'; exit 127; fi`,
     `      if ! timeout --foreground 1800 ${shellQuote(runtime.npm)} install --no-audit --no-fund --progress=false --prefer-offline --fetch-retries=3 --fetch-timeout=180000; then`,
-    `        echo '[Birdserver] npm install failed or timed out; npm start was not launched.'`,
-    `        exit 1`,
+    `        echo '[Birdserver] npm install encountered ENOTEMPTY or conflict; cleaning conflicting modules and retrying with --force...'`,
+    `        rm -rf node_modules/.cache package-lock.json 2>/dev/null || true`,
+    `        if ! timeout --foreground 1800 ${shellQuote(runtime.npm)} install --no-audit --no-fund --progress=false --force; then`,
+    `          echo '[Birdserver] npm install failed on retry; npm start was not launched.'`,
+    `          exit 1`,
+    `        fi`,
     `      fi`,
     `    fi`,
     `    touch ${shellQuote(dependencyMarker)}`,

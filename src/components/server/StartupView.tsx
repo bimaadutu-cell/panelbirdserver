@@ -126,7 +126,10 @@ export function StartupView({
           <option value="18">Node v18 (Cached / Ready)</option>
           <option value="20">Node v20 (Cached / Ready)</option>
           <option value="22">Node v22 (Recommended / Ready)</option>
-          <option value="23">Node v23 (Latest / Ready)</option>
+          <option value="23">Node v23 (Stable / Ready)</option>
+          <option value="24">Node v24 (Latest / Ready)</option>
+          <option value="25">Node v25 (Cutting Edge / Ready)</option>
+          <option value="26">Node v26 (Bleeding Edge / Ready)</option>
         </select>
       </div>
 
