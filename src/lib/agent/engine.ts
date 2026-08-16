@@ -16,8 +16,8 @@ const BACKUPS_DIR = path.join(BASE_STORAGE_DIR, "backups");
 // node_modules directory every few seconds can freeze the whole panel.
 const diskUsageCache = new Map<string, { bytes: number; refreshedAt: number; pending: boolean }>();
 const processMetricsCache = new Map<string, { pid: number; cpuPercent: number; memoryBytes: number; refreshedAt: number; pending: boolean }>();
-const DISK_USAGE_TTL_MS = 10_000;
-const PROCESS_METRICS_TTL_MS = 1_500;
+const DISK_USAGE_TTL_MS = 3_000;
+const PROCESS_METRICS_TTL_MS = 800;
 
 function refreshDiskUsage(serverId: string, serverRoot: string) {
   const current = diskUsageCache.get(serverId) || { bytes: 0, refreshedAt: 0, pending: false };
