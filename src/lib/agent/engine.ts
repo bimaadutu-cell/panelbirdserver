@@ -993,7 +993,7 @@ process.exit(0);
     `mkfifo -m 600 ${shellQuote(inputPipePath)}`,
     `tail -n 0 -F ${shellQuote(inputLogPath)} > ${shellQuote(inputPipePath)} & feeder=$!`,
     "set +e",
-    `${hostBinaries.bash} ${shellQuote(startupScriptPath)} < ${shellQuote(inputPipePath)} >> ${shellQuote(outputLogPath)} 2>&1`,
+    `nice -n 19 ionice -c3 ${hostBinaries.bash} ${shellQuote(startupScriptPath)} < ${shellQuote(inputPipePath)} >> ${shellQuote(outputLogPath)} 2>&1 || ${hostBinaries.bash} ${shellQuote(startupScriptPath)} < ${shellQuote(inputPipePath)} >> ${shellQuote(outputLogPath)} 2>&1`,
     "runtime_rc=$?",
     "set -e",
     'kill "$feeder" 2>/dev/null || true',
