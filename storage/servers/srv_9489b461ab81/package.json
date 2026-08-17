@@ -1,8 +1,0 @@
-{
-  "name": "server-srv_9489b461ab81",
-  "version": "1.0.0",
-  "main": "index.js",
-  "scripts": {
-    "start": "node index.js"
-  }
-}

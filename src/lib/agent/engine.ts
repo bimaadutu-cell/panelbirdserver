@@ -833,7 +833,8 @@ async function startServerInternal(serverId: string): Promise<boolean> {
   // setting made npm look like it crashed the entire panel under memory
   // pressure. Keep an explicit operator value, otherwise use a conservative
   // default that can be overridden with NODE_OPTIONS.
-  const nodeOptions = runtimeEnv.NODE_OPTIONS?.trim() || "--max-old-space-size=768";
+  // OOM-Guard: Limit bot memory to 384MB max so Railway container never crashes with OOM
+  const nodeOptions = runtimeEnv.NODE_OPTIONS?.trim() || "--max-old-space-size=384";
 
   const rawStartupCommand = (server.startupCommand || DEFAULT_NODE_STARTUP_COMMAND).trim();
   const normalizedStartupCommand = normalizeStartupCommand(rawStartupCommand, runtimeContainerAlias, runtime);

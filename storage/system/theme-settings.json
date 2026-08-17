@@ -1,6 +1,0 @@
-{
-  "preset": "neon-grid",
-  "backgroundType": "image",
-  "backgroundUrl": "/api/public/theme-media/background.jpg",
-  "overlayOpacity": 0.9
-}
