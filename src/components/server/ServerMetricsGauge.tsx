@@ -39,7 +39,7 @@ export function ServerMetricsGauge({
     };
 
     fetchMetrics();
-    const interval = setInterval(fetchMetrics, 1000);
+    const interval = setInterval(fetchMetrics, 500);
     return () => clearInterval(interval);
   }, [serverId]);
 

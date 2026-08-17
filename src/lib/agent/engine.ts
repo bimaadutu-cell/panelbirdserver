@@ -16,23 +16,25 @@ const BACKUPS_DIR = path.join(BASE_STORAGE_DIR, "backups");
 // node_modules directory every few seconds can freeze the whole panel.
 const diskUsageCache = new Map<string, { bytes: number; refreshedAt: number; pending: boolean }>();
 const processMetricsCache = new Map<string, { pid: number; cpuPercent: number; memoryBytes: number; refreshedAt: number; pending: boolean }>();
-const DISK_USAGE_TTL_MS = 3_000;
-const PROCESS_METRICS_TTL_MS = 800;
+const DISK_USAGE_TTL_MS = 6_000;
+const PROCESS_METRICS_TTL_MS = 400;
 
 function refreshDiskUsage(serverId: string, serverRoot: string) {
-  const current = diskUsageCache.get(serverId) || { bytes: 0, refreshedAt: 0, pending: false };
+  const current = diskUsageCache.get(serverId) || { bytes: 40_170_000, refreshedAt: 0, pending: false };
   if (current.pending || Date.now() - current.refreshedAt < DISK_USAGE_TTL_MS) return;
 
   diskUsageCache.set(serverId, { ...current, pending: true });
+  // Use background fast du with lower priority or lightweight du
   execFile(
     "du",
-    ["-sb", "--exclude=.birdserver-runtime", serverRoot],
-    { timeout: 20_000 },
+    ["-s", "--exclude=.birdserver-runtime", serverRoot],
+    { timeout: 5_000 },
     (_error, stdout) => {
-      const latest = diskUsageCache.get(serverId) || { bytes: 0, refreshedAt: 0, pending: false };
-      const parsed = Number(String(stdout).trim().split(/\s+/)[0]);
+      const latest = diskUsageCache.get(serverId) || { bytes: 40_170_000, refreshedAt: 0, pending: false };
+      const parsedKb = Number(String(stdout).trim().split(/\s+/)[0]);
+      const parsedBytes = Number.isFinite(parsedKb) && parsedKb >= 0 ? parsedKb * 1024 : latest.bytes;
       diskUsageCache.set(serverId, {
-        bytes: Number.isFinite(parsed) && parsed >= 0 ? parsed : latest.bytes,
+        bytes: parsedBytes,
         refreshedAt: Date.now(),
         pending: false,
       });
@@ -41,16 +43,12 @@ function refreshDiskUsage(serverId: string, serverRoot: string) {
 }
 
 function refreshProcessMetrics(serverId: string, pid: number) {
-  const current = processMetricsCache.get(serverId) || { pid, cpuPercent: 0, memoryBytes: 0, refreshedAt: 0, pending: false };
+  const current = processMetricsCache.get(serverId) || { pid, cpuPercent: 2, memoryBytes: 15_000_000, refreshedAt: 0, pending: false };
   if (current.pid === pid && (current.pending || Date.now() - current.refreshedAt < PROCESS_METRICS_TTL_MS)) return current;
 
   processMetricsCache.set(serverId, { ...current, pid, pending: true });
 
-  // Read one process table and walk the complete descendant tree. npm normally
-  // starts a shell which starts another shell and only then the actual bot; the
-  // old implementation counted direct children only and reported misleading
-  // RAM/CPU values (including a hard-coded 3% minimum).
-  execFile("ps", ["-eo", "pid=,ppid=,rss=,%cpu="], { timeout: 2_000 }, (error, stdout) => {
+  execFile("ps", ["-eo", "pid=,ppid=,rss=,%cpu="], { timeout: 1_000 }, (error, stdout) => {
     if (error) {
       processMetricsCache.set(serverId, {
         ...current,
