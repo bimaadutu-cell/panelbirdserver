@@ -384,7 +384,7 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
 
         <form onSubmit={handleSendCommand} className="bg-zinc-900/80 border-t border-zinc-800 p-2.5 flex items-center gap-2">
           <span className="text-emerald-400 font-mono text-sm pl-2 font-bold">&gt;</span>
-          <input type="text" value={command} onChange={(e) => setCommand(e.target.value)} placeholder={serverStatus === "running" ? "Type command or input here (e.g. npm install baileys && npm start)..." : serverStatus === "starting" ? "Installing dependencies; console input is locked until npm start..." : "Server is offline. Press START above first."} disabled={serverStatus !== "running"} className="flex-1 bg-transparent text-white font-mono text-xs focus:outline-none placeholder-zinc-600 disabled:opacity-50" />
+          <input type="text" value={command} onChange={(e) => setCommand(e.target.value)} placeholder={serverStatus === "running" ? "Type command here..." : serverStatus === "starting" ? "Installing dependencies aggressively... console input unlocks on app start." : "Server is offline. Press START above first."} disabled={serverStatus !== "running"} className="flex-1 bg-transparent text-white font-mono text-xs focus:outline-none placeholder-zinc-600 disabled:opacity-50" />
           <button type="submit" disabled={serverStatus !== "running" || !command.trim()} className="px-3 py-1.5 rounded-lg bg-white text-black font-bold text-xs hover:bg-zinc-200 disabled:opacity-30 transition-all flex items-center gap-1"><Send className="w-3.5 h-3.5" />Send</button>
         </form>
       </div>
