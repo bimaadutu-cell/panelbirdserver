@@ -2,33 +2,308 @@
 
 :root {
   color-scheme: dark;
+  --spidey-black: #050608;
+  --spidey-black-soft: #0a0d12;
+  --spidey-panel: rgba(9, 13, 20, 0.82);
+  --spidey-red: #ff1744;
+  --spidey-red-bright: #ff3158;
+  --spidey-blue: #00a8ff;
+  --spidey-blue-bright: #31c6ff;
+  --spidey-ink: #eaf7ff;
+  --spidey-muted: #91a7b8;
+  --spidey-line: rgba(0, 168, 255, 0.22);
 }
 
 html,
 body {
   min-height: 100%;
+  background: var(--spidey-black);
 }
 
 body {
+  color: var(--spidey-ink);
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  overflow-x: hidden;
+  text-rendering: optimizeSpeed;
 }
 
-
-/* Birdserver performance mode: keep interaction feedback immediate.
-   A browser/display still decides the real refresh rate (up to 120Hz). */
-@media (min-width: 1px) {
-  .transition-all { transition-duration: 80ms !important; }
-  .transition-colors { transition-duration: 60ms !important; }
-  .transition-opacity { transition-duration: 60ms !important; }
-  .duration-500 { transition-duration: 100ms !important; }
-  .duration-200 { transition-duration: 80ms !important; }
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
 
-html {
-  scroll-behavior: auto;
+button,
+a,
+input,
+select,
+textarea {
+  touch-action: manipulation;
+}
+
+button,
+a {
   -webkit-tap-highlight-color: transparent;
 }
 
-button, a, input, select, textarea {
-  touch-action: manipulation;
+/* Shared Spidey panel language. Existing Tailwind utility classes are kept
+   for compatibility, while these selectors give every existing screen the
+   same permanent neon surface without requiring a rewrite of every page. */
+[class*="bg-zinc-950"] {
+  background-color: var(--spidey-panel) !important;
 }
+
+[class*="bg-zinc-900"] {
+  background-color: rgba(13, 20, 31, 0.78) !important;
+}
+
+[class*="bg-zinc-800"] {
+  background-color: rgba(25, 36, 51, 0.76) !important;
+}
+
+[class*="border-zinc-800"],
+[class*="border-zinc-700"] {
+  border-color: var(--spidey-line) !important;
+}
+
+[class*="text-zinc-400"],
+[class*="text-zinc-500"] {
+  color: var(--spidey-muted) !important;
+}
+
+[class*="text-white"] {
+  color: var(--spidey-ink) !important;
+}
+
+input,
+select,
+textarea {
+  border-color: rgba(0, 168, 255, 0.3) !important;
+  background-color: rgba(5, 9, 15, 0.82) !important;
+  transition: border-color 160ms ease, box-shadow 160ms ease, background-color 160ms ease;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--spidey-blue-bright) !important;
+  box-shadow: 0 0 0 3px rgba(0, 168, 255, 0.12), 0 0 22px rgba(0, 168, 255, 0.14);
+}
+
+/* Neon action surfaces: use transform/opacity only for smooth compositor work. */
+button:not(:disabled),
+a[class*="rounded"] {
+  transition: transform 160ms ease, color 160ms ease, background-color 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+button:not(:disabled):hover,
+a[class*="rounded"]:hover {
+  transform: translate3d(0, -1px, 0);
+}
+
+/* The original white CTAs become red-blue Spidey actions without changing JSX. */
+[class*="bg-white"] {
+  background: linear-gradient(135deg, var(--spidey-red), #b8002f 48%, var(--spidey-blue)) !important;
+  color: #fff !important;
+  border-color: rgba(255, 49, 88, 0.65) !important;
+  box-shadow: 0 0 18px rgba(255, 23, 68, 0.22), inset 0 0 0 1px rgba(255,255,255,0.08);
+}
+
+[class*="hover\\:bg-zinc-200"]:hover,
+[class*="hover\\:bg-white"]:hover,
+[class*="hover\\:text-white"]:hover {
+  color: #ffffff !important;
+  border-color: rgba(49, 198, 255, 0.7) !important;
+  box-shadow: 0 0 24px rgba(0, 168, 255, 0.22);
+}
+
+/* Decorative background primitives. They are static-sized, pointer-free, and
+   use compositor-friendly animation so decorative motion does not scan the DOM. */
+.spidey-web {
+  position: absolute;
+  width: min(64vw, 760px);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  opacity: 0.26;
+  background:
+    repeating-conic-gradient(from 0deg, rgba(49, 198, 255, 0.5) 0deg 0.7deg, transparent 0.7deg 30deg),
+    repeating-radial-gradient(circle, transparent 0 9%, rgba(255, 49, 88, 0.5) 9.2% 9.7%, transparent 10% 19%);
+  -webkit-mask-image: radial-gradient(circle, #000 0 68%, transparent 70%);
+  mask-image: radial-gradient(circle, #000 0 68%, transparent 70%);
+  will-change: transform;
+  transform: translateZ(0);
+  animation: webFloat 18s ease-in-out infinite alternate;
+}
+
+.spidey-web-left {
+  left: -22vw;
+  top: 10vh;
+  transform: rotate(-16deg) translateZ(0);
+}
+
+.spidey-web-right {
+  right: -22vw;
+  bottom: -18vh;
+  transform: rotate(22deg) translateZ(0);
+  animation-delay: -7s;
+}
+
+.spidey-thread {
+  position: absolute;
+  top: -8vh;
+  width: 1px;
+  height: 48vh;
+  opacity: 0.45;
+  transform-origin: top center;
+  background: linear-gradient(to bottom, rgba(49,198,255,0), rgba(49,198,255,0.62), rgba(255,49,88,0));
+  will-change: transform;
+  animation: threadSway 7s ease-in-out infinite alternate;
+}
+
+.spidey-thread-one { left: 14%; animation-delay: -1.4s; }
+.spidey-thread-two { left: 31%; height: 32vh; animation-delay: -4s; }
+.spidey-thread-three { right: 17%; height: 40vh; animation-delay: -2.6s; }
+
+.spidey-signal {
+  position: absolute;
+  width: 250px;
+  height: 250px;
+  border: 1px solid rgba(0, 168, 255, 0.25);
+  border-radius: 50%;
+  box-shadow: 0 0 0 26px rgba(0, 168, 255, 0.04), 0 0 0 52px rgba(255, 23, 68, 0.035);
+  opacity: 0.5;
+  will-change: transform, opacity;
+  animation: signalPulse 5.5s ease-out infinite;
+}
+
+.spidey-card {
+  position: relative;
+  isolation: isolate;
+  background: linear-gradient(145deg, rgba(12, 18, 29, 0.92), rgba(6, 9, 14, 0.88)) !important;
+  border: 1px solid rgba(0, 168, 255, 0.27) !important;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.38), 0 0 30px rgba(0, 168, 255, 0.07);
+}
+
+.spidey-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: linear-gradient(115deg, rgba(0, 168, 255, 0.08), transparent 42%, rgba(255, 23, 68, 0.07));
+  z-index: -1;
+}
+
+/* Login-specific motion */
+.login-stage { perspective: 1100px; }
+.login-card { animation: cardIn 700ms cubic-bezier(.2,.8,.2,1) both; }
+.login-brand { animation: brandIn 700ms cubic-bezier(.2,.8,.2,1) 80ms both; }
+.login-field { animation: fieldIn 500ms cubic-bezier(.2,.8,.2,1) both; }
+.login-field:nth-child(2) { animation-delay: 80ms; }
+.login-field:nth-child(3) { animation-delay: 140ms; }
+
+.login-mark {
+  position: relative;
+  background: linear-gradient(145deg, #ff3158, #a4002d 48%, #007ec2) !important;
+  box-shadow: 0 0 24px rgba(255, 23, 68, 0.5), 0 0 46px rgba(0, 168, 255, 0.24);
+  animation: markFloat 4s ease-in-out infinite;
+}
+
+.login-mark::after {
+  content: "✦";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: rgba(255,255,255,0.9);
+  font-size: 22px;
+  text-shadow: 0 0 12px rgba(255,255,255,0.8);
+}
+
+.login-submit { position: relative; overflow: hidden; }
+.login-submit::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -38%;
+  width: 24%;
+  transform: skewX(-18deg) translateX(0);
+  background: rgba(255,255,255,0.32);
+  will-change: transform;
+  animation: buttonSweep 3.8s ease-in-out infinite;
+}
+.login-submit > * { position: relative; z-index: 1; }
+
+@keyframes webFloat {
+  from { transform: rotate(-16deg) translate3d(0, -8px, 0); }
+  to { transform: rotate(-11deg) translate3d(0, 14px, 0); }
+}
+@keyframes threadSway {
+  from { transform: rotate(-2deg) translate3d(0, -4px, 0); }
+  to { transform: rotate(3deg) translate3d(0, 9px, 0); }
+}
+@keyframes signalPulse {
+  0% { transform: scale(.72) translateZ(0); opacity: 0; }
+  24% { opacity: .52; }
+  100% { transform: scale(1.55) translateZ(0); opacity: 0; }
+}
+@keyframes cardIn {
+  from { opacity: 0; transform: translate3d(0, 22px, 0) rotateX(4deg); }
+  to { opacity: 1; transform: translate3d(0, 0, 0) rotateX(0); }
+}
+@keyframes brandIn {
+  from { opacity: 0; transform: translate3d(0, -18px, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+@keyframes fieldIn {
+  from { opacity: 0; transform: translate3d(-10px, 0, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+@keyframes markFloat {
+  0%, 100% { transform: translate3d(0, 0, 0) rotate(-2deg); }
+  50% { transform: translate3d(0, -5px, 0) rotate(2deg); }
+}
+@keyframes buttonSweep {
+  0%, 48% { transform: skewX(-18deg) translateX(0); }
+  74%, 100% { transform: skewX(-18deg) translateX(520%); }
+}
+
+@media (max-width: 640px) {
+  .spidey-web { width: 100vw; opacity: 0.18; }
+  .spidey-thread { opacity: 0.24; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (update: slow) {
+  .spidey-web, .spidey-thread, .spidey-signal, .login-submit::after { animation: none !important; }
+}
+
+/* A browser/display decides the actual refresh rate; these rules keep the
+   visual work compositor-friendly instead of faking a 120Hz guarantee. */
+html { -webkit-tap-highlight-color: transparent; scroll-behavior: auto; }
+.content-auto { content-visibility: auto; contain-intrinsic-size: 1px 600px; }
+::selection { color: #fff; background: rgba(255, 23, 68, 0.56); }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: rgba(4, 7, 12, 0.65); }
+::-webkit-scrollbar-thumb { background: linear-gradient(var(--spidey-red), var(--spidey-blue)); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: var(--spidey-blue-bright); }
+
+@media (min-width: 1px) {
+  .transition-all { transition-duration: 140ms !important; }
+  .transition-colors { transition-duration: 120ms !important; }
+  .transition-opacity { transition-duration: 120ms !important; }
+  .duration-500 { transition-duration: 220ms !important; }
+  .duration-200 { transition-duration: 140ms !important; }
+}
+
+.spidey-kicker { color: var(--spidey-blue-bright); letter-spacing: 0.22em; text-transform: uppercase; font-size: 0.65rem; font-weight: 800; }
+.spidey-glow-text { text-shadow: 0 0 14px rgba(0, 168, 255, 0.35), 0 0 28px rgba(255, 23, 68, 0.16); }
+.spidey-divider { height: 1px; background: linear-gradient(90deg, transparent, rgba(0, 168, 255, 0.55), rgba(255, 23, 68, 0.55), transparent); }

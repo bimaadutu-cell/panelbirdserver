@@ -7,7 +7,7 @@ import { Settings, ShieldCheck, Activity, ImagePlus, Palette } from "lucide-reac
 export default function AdminSystemPage() {
   const [user, setUser] = useState<any>(null);
   const [health, setHealth] = useState<any>(null);
-  const [theme, setTheme] = useState<any>({ preset: "aurora-digital", overlayOpacity: 0.58, backgroundType: "none", backgroundUrl: "" });
+  const [theme, setTheme] = useState<any>({ preset: "spidey-neon", overlayOpacity: 0.58, backgroundType: "none", backgroundUrl: "" });
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -74,7 +74,7 @@ export default function AdminSystemPage() {
           <h1 className="text-2xl font-black tracking-tight text-white flex items-center gap-2">
             <Settings className="w-6 h-6 text-white" /> Global System Settings & Diagnostics
           </h1>
-          <p className="text-xs text-zinc-400 mt-1">Theme, background, diagnostics, and Birdserver infrastructure settings.</p>
+          <p className="text-xs text-zinc-400 mt-1">Spidey theme, background, diagnostics, and Birdserver infrastructure settings.</p>
         </div>
 
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
@@ -113,6 +113,7 @@ export default function AdminSystemPage() {
                 onChange={(e) => setTheme({ ...theme, preset: e.target.value })}
                 className="w-full bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2 text-xs"
               >
+                <option value="spidey-neon">Spidey Neon · Blue / Red / Black</option>
                 <option value="aurora-digital">Aurora Digital</option>
                 <option value="neon-grid">Neon Grid</option>
                 <option value="sunset-cyber">Sunset Cyber</option>
@@ -155,7 +156,7 @@ export default function AdminSystemPage() {
             ) : null}
 
             <button onClick={saveTheme} disabled={saving} className="px-4 py-2 rounded-xl bg-white text-black text-xs font-bold hover:bg-zinc-200 disabled:opacity-50">
-              {saving ? "Saving..." : "Save Theme"}
+              {saving ? "Saving..." : "Save Theme Permanently"}
             </button>
           </div>
         </div>

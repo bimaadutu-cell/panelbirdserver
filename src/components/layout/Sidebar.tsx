@@ -90,19 +90,19 @@ export function Sidebar({ user }: SidebarProps) {
   }
 
   const content = (
-    <div className="flex flex-col h-full bg-zinc-950 border-r border-zinc-800 text-zinc-100 p-4">
+    <div className="flex flex-col h-full bg-zinc-950 border-r border-zinc-800 text-zinc-100 p-4 spidey-card">
       {/* Brand Header */}
       <div className="flex items-center justify-between px-2 py-3 border-b border-zinc-800/80 mb-4">
         <div className="flex items-center space-x-3">
-          <div className="w-9 h-9 rounded-xl bg-white text-black flex items-center justify-center font-black shadow-[0_0_15px_rgba(255,255,255,0.4)]">
+          <div className="w-9 h-9 rounded-xl bg-white text-black flex items-center justify-center font-black shadow-[0_0_15px_rgba(255,23,68,0.4)] login-mark">
             B
           </div>
           <div>
-            <h1 className="font-bold text-lg tracking-wider text-white flex items-center gap-1.5">
+            <h1 className="font-bold text-lg tracking-wider text-white flex items-center gap-1.5 spidey-glow-text">
               BIRDSERVER <span className="text-xs px-1.5 py-0.5 rounded bg-zinc-800 border border-zinc-700 font-mono text-zinc-300">V1</span>
             </h1>
             <p className="text-[10px] text-zinc-400 font-medium tracking-tight">
-              Developer by BimzOfficial
+              SPIDEY CONTROL · BimzOfficial
             </p>
           </div>
         </div>
@@ -135,7 +135,7 @@ export function Sidebar({ user }: SidebarProps) {
               onClick={() => setMobileOpen(false)}
               className={`flex items-center space-x-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 ${
                 isActive
-                  ? "bg-white text-black font-semibold shadow-[0_0_12px_rgba(255,255,255,0.3)]"
+                  ? "bg-white text-black font-semibold shadow-[0_0_18px_rgba(255,23,68,0.34)]"
                   : "text-zinc-400 hover:text-white hover:bg-zinc-900/80"
               }`}
             >
@@ -176,10 +176,10 @@ export function Sidebar({ user }: SidebarProps) {
       {/* Mobile Top Bar Header */}
       <div className="md:hidden flex items-center justify-between p-4 bg-zinc-950 border-b border-zinc-800 text-white sticky top-0 z-40">
         <div className="flex items-center space-x-2">
-          <div className="w-7 h-7 rounded-lg bg-white text-black flex items-center justify-center font-black text-xs">
+          <div className="w-7 h-7 rounded-lg bg-white text-black flex items-center justify-center font-black text-xs login-mark">
             B
           </div>
-          <span className="font-bold text-sm tracking-wider">BIRDSERVER V1</span>
+          <span className="font-bold text-sm tracking-wider spidey-glow-text">BIRDSERVER V1</span>
         </div>
         <button
           onClick={() => setMobileOpen(true)}

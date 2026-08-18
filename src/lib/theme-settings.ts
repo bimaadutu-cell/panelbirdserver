@@ -1,8 +1,10 @@
 import fs from "fs";
 import path from "path";
 
+export type ThemePreset = "spidey-neon" | "neon-grid" | "aurora-digital" | "sunset-cyber" | "matrix-wave";
+
 export interface ThemeSettings {
-  preset: "neon-grid" | "aurora-digital" | "sunset-cyber" | "matrix-wave";
+  preset: ThemePreset;
   backgroundType: "none" | "image" | "video";
   backgroundUrl: string;
   overlayOpacity: number;
@@ -13,7 +15,7 @@ const SETTINGS_FILE = path.join(STORAGE_DIR, "theme-settings.json");
 const THEME_MEDIA_DIR = path.join(STORAGE_DIR, "theme-media");
 
 export const defaultThemeSettings: ThemeSettings = {
-  preset: "aurora-digital",
+  preset: "spidey-neon",
   backgroundType: "none",
   backgroundUrl: "",
   overlayOpacity: 0.58,

@@ -16,8 +16,10 @@ const BACKUPS_DIR = path.join(BASE_STORAGE_DIR, "backups");
 // node_modules directory every few seconds can freeze the whole panel.
 const diskUsageCache = new Map<string, { bytes: number; refreshedAt: number; pending: boolean }>();
 const processMetricsCache = new Map<string, { pid: number; cpuPercent: number; memoryBytes: number; refreshedAt: number; pending: boolean }>();
-const DISK_USAGE_TTL_MS = 6_000;
-const PROCESS_METRICS_TTL_MS = 400;
+// Resource telemetry is intentionally sampled, not calculated on every UI poll.
+// This keeps the control plane responsive while preserving useful live metrics.
+const DISK_USAGE_TTL_MS = 10_000;
+const PROCESS_METRICS_TTL_MS = 1_200;
 
 function refreshDiskUsage(serverId: string, serverRoot: string) {
   const current = diskUsageCache.get(serverId) || { bytes: 40_170_000, refreshedAt: 0, pending: false };
@@ -1274,6 +1276,8 @@ export async function extractServerArchive(serverId: string, archiveRelPath: str
 
   // Archive extraction is CPU/memory heavy. Run AdmZip in a child process so
   // the Next.js event loop stays responsive while a large bot ZIP is unpacked.
+  // The worker validates every entry before writing, so a full WhatsApp bot ZIP
+  // keeps its nested folders/files without allowing Zip Slip traversal.
   const worker = `
     const fs = require("fs");
     const path = require("path");
