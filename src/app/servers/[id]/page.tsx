@@ -1,9 +1,11 @@
 "use client";
 
-import React, { useEffect, useRef, useState, use } from "react";
+import React, { useCallback, useEffect, useRef, useState, use } from "react";
 import { useRouter } from "next/navigation";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { ServerMetricsGauge } from "@/components/server/ServerMetricsGauge";
+import { ServerPreview } from "@/components/server/ServerPreview";
+import { ServerJobsPanel } from "@/components/server/ServerJobsPanel";
 import { ConsoleView } from "@/components/server/ConsoleView";
 import { FileManagerView } from "@/components/server/FileManagerView";
 import { BackupsView } from "@/components/server/BackupsView";
@@ -41,7 +43,7 @@ export default function ServerDetailPage({
   const router = useRouter();
   const sessionCheckedRef = useRef(false);
 
-  const fetchServerDetails = async () => {
+  const fetchServerDetails = useCallback(async () => {
     try {
       if (!sessionCheckedRef.current) {
         const meRes = await fetch("/api/auth/me", {
@@ -75,7 +77,6 @@ export default function ServerDetailPage({
       } else if (srvRes.status === 404) {
         // A real 404 means the resource is gone; keep the current UI if this
         // is only a background poll so a transient response cannot blank the page.
-        if (!server) setServer(null);
         setLoadError("Server tidak ditemukan di database.");
       } else {
         // Never replace an already-rendered server with a transient polling error.
@@ -91,7 +92,7 @@ export default function ServerDetailPage({
     } finally {
       setLoading(false);
     }
-  };
+  }, [id, router]);
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -112,7 +113,7 @@ export default function ServerDetailPage({
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [id]);
+  }, [fetchServerDetails]);
 
   const handlePowerAction = async (action: "start" | "stop" | "restart" | "kill") => {
     setPowerError(null);
@@ -209,9 +210,11 @@ export default function ServerDetailPage({
                   className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold uppercase ${
                     server.status === "running"
                       ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
-                      : ["starting", "installing"].includes(server.status)
+                      : ["creating", "starting", "installing", "stopping", "restarting"].includes(server.status)
                         ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
-                        : "bg-zinc-800 text-zinc-400 border border-zinc-700"
+                        : server.status === "error"
+                          ? "bg-red-500/10 text-red-300 border border-red-500/20"
+                          : "bg-zinc-800 text-zinc-400 border border-zinc-700"
                   }`}
                 >
                   {server.status === "starting" ? "installing" : server.status}
@@ -226,6 +229,8 @@ export default function ServerDetailPage({
           </div>
         </div>
 
+        <ServerPreview serverName={server.name} status={server.status} />
+
         {/* Live Gauges */}
         <ServerMetricsGauge
           serverId={server.id}
@@ -233,6 +238,8 @@ export default function ServerDetailPage({
           cpuPercent={server.cpuPercent}
           diskMb={server.diskMb}
         />
+
+        <ServerJobsPanel serverId={server.id} />
 
         {/* Tabs Bar */}
         <div className="flex items-center space-x-1 border-b border-zinc-800 overflow-x-auto pb-1">

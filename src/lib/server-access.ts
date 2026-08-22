@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
+import { ensureDatabaseReady } from "@/db/bootstrap";
 import { users, servers, subusers } from "@/db/schema";
 import { authenticateApiKey, getSessionUser, UserSession } from "@/lib/auth";
 import { eq, and } from "drizzle-orm";
 
 export async function getRequestSession(req: Request): Promise<UserSession | null> {
+  await ensureDatabaseReady();
   const authHeader = req.headers.get("authorization");
   let session = await authenticateApiKey(authHeader);
   if (!session) {

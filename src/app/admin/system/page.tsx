@@ -2,7 +2,8 @@
 
 import React, { useEffect, useState } from "react";
 import { Sidebar } from "@/components/layout/Sidebar";
-import { Settings, ShieldCheck, Activity, ImagePlus, Palette } from "lucide-react";
+import { formatBytes } from "@/lib/utils";
+import { Settings, ShieldCheck, Activity, Palette, HardDrive, Trash2, RefreshCw } from "lucide-react";
 
 export default function AdminSystemPage() {
   const [user, setUser] = useState<any>(null);
@@ -10,6 +11,8 @@ export default function AdminSystemPage() {
   const [theme, setTheme] = useState<any>({ preset: "spidey-neon", overlayOpacity: 0.58, backgroundType: "none", backgroundUrl: "" });
   const [uploading, setUploading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [cache, setCache] = useState<any>(null);
+  const [cleaning, setCleaning] = useState(false);
 
   useEffect(() => {
     async function loadData() {
@@ -25,6 +28,10 @@ export default function AdminSystemPage() {
         const tRes = await fetch("/api/v1/admin/theme");
         const tData = await tRes.json();
         if (tData.success) setTheme(tData.data);
+
+        const cRes = await fetch("/api/v1/admin/cache", { cache: "no-store" });
+        const cData = await cRes.json();
+        if (cData.success) setCache(cData.data);
       } catch (err) {
         console.error(err);
       }
@@ -47,6 +54,24 @@ export default function AdminSystemPage() {
       alert("Failed to save theme");
     } finally {
       setSaving(false);
+    }
+  };
+
+  const cleanCache = async (action: "clean_temp" | "clean_orphan" | "clean_all") => {
+    setCleaning(true);
+    try {
+      const res = await fetch("/api/v1/admin/cache", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const data = await res.json();
+      if (data.success) setCache(data.data.summary);
+      else alert(data.error?.message || "Cache cleanup failed");
+    } catch {
+      alert("Cache cleanup failed");
+    } finally {
+      setCleaning(false);
     }
   };
 
@@ -158,6 +183,25 @@ export default function AdminSystemPage() {
             <button onClick={saveTheme} disabled={saving} className="px-4 py-2 rounded-xl bg-white text-black text-xs font-bold hover:bg-zinc-200 disabled:opacity-50">
               {saving ? "Saving..." : "Save Theme Permanently"}
             </button>
+          </div>
+
+          <div className="bg-zinc-950/85 border border-zinc-800 p-6 rounded-3xl space-y-4 shadow-xl backdrop-blur xl:col-span-3">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-base font-bold text-white flex items-center gap-2"><HardDrive className="w-5 h-5 text-cyan-300" /> Cache Manager</h3>
+              <button onClick={() => window.location.reload()} className="rounded-xl border border-zinc-700 px-3 py-2 text-[11px] font-bold text-zinc-300 hover:text-white"><RefreshCw className="mr-1 inline h-3.5 w-3.5" /> Refresh</button>
+            </div>
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              <div className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-3"><div className="text-[10px] uppercase tracking-wider text-zinc-500">Server storage</div><div className="mt-1 font-mono text-sm text-white">{formatBytes(cache?.serverStorageBytes || 0)}</div></div>
+              <div className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-3"><div className="text-[10px] uppercase tracking-wider text-zinc-500">Backups</div><div className="mt-1 font-mono text-sm text-white">{formatBytes(cache?.backupBytes || 0)}</div></div>
+              <div className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-3"><div className="text-[10px] uppercase tracking-wider text-zinc-500">Temp files</div><div className="mt-1 font-mono text-sm text-amber-300">{cache?.temporaryFiles ?? 0}</div></div>
+              <div className="rounded-2xl border border-zinc-800 bg-zinc-900/70 p-3"><div className="text-[10px] uppercase tracking-wider text-zinc-500">Temp size</div><div className="mt-1 font-mono text-sm text-amber-300">{formatBytes(cache?.temporaryBytes || 0)}</div></div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button disabled={cleaning} onClick={() => cleanCache("clean_temp")} className="inline-flex items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] font-bold text-amber-200 disabled:opacity-50"><Trash2 className="h-3.5 w-3.5" /> Clean temp</button>
+              <button disabled={cleaning} onClick={() => cleanCache("clean_orphan")} className="inline-flex items-center gap-2 rounded-xl border border-fuchsia-500/30 bg-fuchsia-500/10 px-3 py-2 text-[11px] font-bold text-fuchsia-200 disabled:opacity-50"><Trash2 className="h-3.5 w-3.5" /> Clean orphan</button>
+              <button disabled={cleaning} onClick={() => cleanCache("clean_all")} className="inline-flex items-center gap-2 rounded-xl bg-white px-3 py-2 text-[11px] font-black text-black disabled:opacity-50"><Trash2 className="h-3.5 w-3.5" /> {cleaning ? "Cleaning..." : "Clean all safe cache"}</button>
+            </div>
+            <p className="text-[11px] leading-relaxed text-zinc-500">Cleanup hanya berjalan pada allowlist storage BirdServer: temporary upload, runtime download, orphan server directory, dan backup file yang tidak direferensikan database. Tidak ada penghapusan global.</p>
           </div>
         </div>
       </main>

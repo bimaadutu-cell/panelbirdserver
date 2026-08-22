@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { db } from "@/db";
+import { db, ensureDatabaseConnection } from "@/db";
 
 type TableDefinition = {
   create: string;
@@ -336,6 +336,42 @@ const tables: Record<string, TableDefinition> = {
       created_at: `alter table webhooks add column if not exists created_at timestamp default now() not null`,
     },
   },
+  server_jobs: {
+    create: `create table if not exists server_jobs (
+      id text primary key,
+      server_id text not null,
+      owner_id text,
+      kind text not null,
+      status text not null default 'queued',
+      phase text not null default 'queued',
+      progress integer not null default 0,
+      pid integer,
+      command text,
+      last_output text,
+      error_code text,
+      created_at timestamp default now() not null,
+      started_at timestamp,
+      finished_at timestamp,
+      cancelled_at timestamp,
+      updated_at timestamp default now() not null
+    )`,
+    columns: {
+      owner_id: `alter table server_jobs add column if not exists owner_id text`,
+      kind: `alter table server_jobs add column if not exists kind text not null default 'cleanup'`,
+      status: `alter table server_jobs add column if not exists status text not null default 'queued'`,
+      phase: `alter table server_jobs add column if not exists phase text not null default 'queued'`,
+      progress: `alter table server_jobs add column if not exists progress integer not null default 0`,
+      pid: `alter table server_jobs add column if not exists pid integer`,
+      command: `alter table server_jobs add column if not exists command text`,
+      last_output: `alter table server_jobs add column if not exists last_output text`,
+      error_code: `alter table server_jobs add column if not exists error_code text`,
+      created_at: `alter table server_jobs add column if not exists created_at timestamp default now() not null`,
+      started_at: `alter table server_jobs add column if not exists started_at timestamp`,
+      finished_at: `alter table server_jobs add column if not exists finished_at timestamp`,
+      cancelled_at: `alter table server_jobs add column if not exists cancelled_at timestamp`,
+      updated_at: `alter table server_jobs add column if not exists updated_at timestamp default now() not null`,
+    },
+  },
   audit_logs: {
     create: `create table if not exists audit_logs (
       id text primary key,
@@ -353,15 +389,36 @@ const tables: Record<string, TableDefinition> = {
   },
 };
 
+const indexes = [
+  "create index if not exists idx_users_reseller_id on users (reseller_id)",
+  "create index if not exists idx_servers_user_id on servers (user_id)",
+  "create index if not exists idx_servers_reseller_id on servers (reseller_id)",
+  "create index if not exists idx_servers_node_id on servers (node_id)",
+  "create index if not exists idx_servers_status on servers (status)",
+  "create index if not exists idx_allocations_node_assigned on allocations (node_id, is_assigned)",
+  "create index if not exists idx_subusers_server_user on subusers (server_id, user_id)",
+  "create index if not exists idx_api_keys_user_id on api_keys (user_id)",
+  "create index if not exists idx_api_keys_prefix on api_keys (key_prefix)",
+  "create index if not exists idx_backups_server_id on backups (server_id)",
+  "create index if not exists idx_schedules_server_active on schedules (server_id, is_active)",
+  "create index if not exists idx_orders_reseller_status on orders (reseller_id, status)",
+  "create index if not exists idx_server_jobs_server_status on server_jobs (server_id, status)",
+  "create index if not exists idx_server_jobs_updated_at on server_jobs (updated_at)",
+  "create index if not exists idx_audit_logs_created_at on audit_logs (created_at)",
+];
+
 async function executeWithRetry(statement: string, attempts = 3) {
   let lastError: unknown;
   for (let index = 0; index < attempts; index += 1) {
     try {
+      await ensureDatabaseConnection();
       await db.execute(sql.raw(statement));
       return;
     } catch (error) {
       lastError = error;
-      await new Promise((resolve) => setTimeout(resolve, 300 * (index + 1)));
+      if (index < attempts - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 250 * 2 ** index));
+      }
     }
   }
   throw lastError;
@@ -419,6 +476,9 @@ async function runBootstrapForTables(tableNames: string[]) {
 
 async function runBootstrap() {
   await runBootstrapForTables(Object.keys(tables));
+  for (const statement of indexes) {
+    await executeWithRetry(statement);
+  }
 }
 
 export async function ensureAuthDatabaseReady() {

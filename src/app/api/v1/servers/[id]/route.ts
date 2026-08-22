@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { allocations, servers } from "@/db/schema";
 import { authorizeServerRequest } from "@/lib/server-access";
-import { getServerMetrics, stopServer } from "@/lib/agent/engine";
+import { cleanupServerResources, getServerMetrics, stopServer } from "@/lib/agent/engine";
 import { createAuditLog } from "@/lib/audit";
 import { updateCompatibleServer } from "@/lib/legacy-db";
 
@@ -30,6 +30,18 @@ export async function GET(
       : null;
 
     const metrics = getServerMetrics(id);
+    const limits = {
+      cpuPercent: server.cpuPercent,
+      memoryBytes: server.memoryMb * 1024 * 1024,
+      diskBytes: server.diskMb * 1024 * 1024,
+    };
+    const enrichedMetrics = {
+      ...metrics,
+      limits,
+      memoryPercent: limits.memoryBytes > 0 ? Math.min(100, (metrics.memoryBytes / limits.memoryBytes) * 100) : null,
+      diskPercent: limits.diskBytes > 0 ? Math.min(100, (metrics.diskBytes / limits.diskBytes) * 100) : null,
+      resourceScope: "server-process-on-host",
+    };
     // Preserve the real runtime phase. Flattening `starting` to `stopped`
     // caused the UI to hide an active npm install and could overwrite the
     // database while the wrapper was still preparing dependencies.
@@ -65,7 +77,7 @@ export async function GET(
               alias: allocation.alias,
             }
           : null,
-        metrics,
+        metrics: enrichedMetrics,
       },
     });
   } catch (err: unknown) {
@@ -189,9 +201,21 @@ export async function DELETE(
     }
 
     const { server, session } = auth;
-    await stopServer(id).catch((error) => {
-      console.warn(`[Birdserver] stop before delete skipped for ${id}:`, error);
-    });
+    let cleanup = { removedFiles: 0, removedBackupFiles: 0 };
+    try {
+      cleanup = await cleanupServerResources(id);
+    } catch (error) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: {
+            code: "SERVER_CLEANUP_FAILED",
+            message: error instanceof Error ? error.message : String(error),
+          },
+        },
+        { status: 409 },
+      );
+    }
 
     if (server.allocationId) {
       await db
@@ -202,13 +226,18 @@ export async function DELETE(
 
     await db.delete(servers).where(eq(servers.id, id));
 
-    await createAuditLog(session.id, "server.delete", { serverId: id, name: server.name }).catch(
+    await createAuditLog(session.id, "server.delete", {
+      serverId: id,
+      name: server.name,
+      cleanup,
+    }).catch(
       (error) => console.warn("[Birdserver] delete audit log skipped:", error)
     );
 
     return NextResponse.json({
       success: true,
       message: "Server deleted successfully",
+      cleanup,
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);

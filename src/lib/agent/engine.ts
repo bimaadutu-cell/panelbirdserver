@@ -4,8 +4,10 @@ import { spawn, execFile, execSync } from "child_process";
 import { createHash } from "crypto";
 import AdmZip from "adm-zip";
 import { db } from "@/db";
-import { servers, backups, templates } from "@/db/schema";
+import { servers, backups, templates, serverJobs } from "@/db/schema";
 import { eq } from "drizzle-orm";
+import { ensureDatabaseConnection } from "@/db";
+import type { ChildProcess } from "child_process";
 import { cryptoRandomString } from "@/lib/utils";
 
 const BASE_STORAGE_DIR = path.resolve(process.cwd(), "storage");
@@ -16,13 +18,25 @@ const BACKUPS_DIR = path.join(BASE_STORAGE_DIR, "backups");
 // node_modules directory every few seconds can freeze the whole panel.
 const diskUsageCache = new Map<string, { bytes: number; refreshedAt: number; pending: boolean }>();
 const processMetricsCache = new Map<string, { pid: number; cpuPercent: number; memoryBytes: number; refreshedAt: number; pending: boolean }>();
+const activeProcesses = new Map<string, ChildProcess>();
+const cancelRequested = new Set<string>();
+const jobWatchers = new Map<string, ReturnType<typeof setInterval>>();
+const networkUsageCache = {
+  rxBytes: 0,
+  txBytes: 0,
+  sampledAt: 0,
+  pending: false,
+};
 // Resource telemetry is intentionally sampled, not calculated on every UI poll.
 // This keeps the control plane responsive while preserving useful live metrics.
 const DISK_USAGE_TTL_MS = 10_000;
 const PROCESS_METRICS_TTL_MS = 1_200;
+const NETWORK_USAGE_TTL_MS = 2_000;
+const STOP_GRACE_PERIOD_MS = Math.max(2_000, Number(process.env.SERVER_STOP_GRACE_MS || 8_000));
+const MAX_CONSOLE_LOG_BYTES = Math.max(1_048_576, Number(process.env.MAX_CONSOLE_LOG_BYTES || 8 * 1024 * 1024));
 
 function refreshDiskUsage(serverId: string, serverRoot: string) {
-  const current = diskUsageCache.get(serverId) || { bytes: 40_170_000, refreshedAt: 0, pending: false };
+  const current = diskUsageCache.get(serverId) || { bytes: 0, refreshedAt: 0, pending: false };
   if (current.pending || Date.now() - current.refreshedAt < DISK_USAGE_TTL_MS) return;
 
   diskUsageCache.set(serverId, { ...current, pending: true });
@@ -32,7 +46,7 @@ function refreshDiskUsage(serverId: string, serverRoot: string) {
     ["-s", "--exclude=.birdserver-runtime", serverRoot],
     { timeout: 5_000 },
     (_error, stdout) => {
-      const latest = diskUsageCache.get(serverId) || { bytes: 40_170_000, refreshedAt: 0, pending: false };
+      const latest = diskUsageCache.get(serverId) || { bytes: 0, refreshedAt: 0, pending: false };
       const parsedKb = Number(String(stdout).trim().split(/\s+/)[0]);
       const parsedBytes = Number.isFinite(parsedKb) && parsedKb >= 0 ? parsedKb * 1024 : latest.bytes;
       diskUsageCache.set(serverId, {
@@ -45,7 +59,7 @@ function refreshDiskUsage(serverId: string, serverRoot: string) {
 }
 
 function refreshProcessMetrics(serverId: string, pid: number) {
-  const current = processMetricsCache.get(serverId) || { pid, cpuPercent: 2, memoryBytes: 15_000_000, refreshedAt: 0, pending: false };
+  const current = processMetricsCache.get(serverId) || { pid, cpuPercent: 0, memoryBytes: 0, refreshedAt: 0, pending: false };
   if (current.pid === pid && (current.pending || Date.now() - current.refreshedAt < PROCESS_METRICS_TTL_MS)) return current;
 
   processMetricsCache.set(serverId, { ...current, pid, pending: true });
@@ -105,6 +119,46 @@ function refreshProcessMetrics(serverId: string, pid: number) {
   return current;
 }
 
+function refreshNetworkUsage() {
+  if (networkUsageCache.pending || Date.now() - networkUsageCache.sampledAt < NETWORK_USAGE_TTL_MS) {
+    return networkUsageCache;
+  }
+
+  networkUsageCache.pending = true;
+  try {
+    const raw = fs.readFileSync("/proc/net/dev", "utf8");
+    let rxBytes = 0;
+    let txBytes = 0;
+    for (const line of raw.split(/\r?\n/).slice(2)) {
+      const [, values] = line.split(":");
+      if (!values) continue;
+      const fields = values.trim().split(/\s+/).map(Number);
+      if (fields.length >= 9) {
+        if (Number.isFinite(fields[0])) rxBytes += fields[0];
+        if (Number.isFinite(fields[8])) txBytes += fields[8];
+      }
+    }
+    networkUsageCache.rxBytes = Math.max(0, rxBytes);
+    networkUsageCache.txBytes = Math.max(0, txBytes);
+    networkUsageCache.sampledAt = Date.now();
+  } catch {
+    // `/proc` is unavailable on some non-Linux development hosts. Null values
+    // are more honest than fabricated network usage in that environment.
+    networkUsageCache.rxBytes = 0;
+    networkUsageCache.txBytes = 0;
+    networkUsageCache.sampledAt = Date.now();
+  } finally {
+    networkUsageCache.pending = false;
+  }
+  return networkUsageCache;
+}
+
+function isWithinPath(root: string, candidate: string) {
+  const resolvedRoot = path.resolve(root);
+  const resolvedCandidate = path.resolve(candidate);
+  return resolvedCandidate === resolvedRoot || resolvedCandidate.startsWith(`${resolvedRoot}${path.sep}`);
+}
+
 fs.mkdirSync(SERVERS_DIR, { recursive: true });
 fs.mkdirSync(BACKUPS_DIR, { recursive: true });
 
@@ -122,7 +176,8 @@ interface RuntimeState {
   lastExitAt?: string;
   lastCommand?: string;
   pid?: number | null;
-  phase?: "starting" | "installing" | "running" | "stopped" | "error";
+  jobId?: string;
+  phase?: "creating" | "installing" | "starting" | "running" | "stopped" | "error";
 }
 
 export const DEFAULT_NODE_STARTUP_COMMAND = 'npm start';
@@ -171,6 +226,9 @@ const hostBinaries = {
   node: detectHostBinary("node", process.execPath || "/usr/local/bin/node"),
   npm: detectHostBinary("npm", "npm"),
   npx: detectHostBinary("npx", "npx"),
+  pnpm: detectHostBinary("pnpm", "pnpm"),
+  yarn: detectHostBinary("yarn", "yarn"),
+  timeout: detectHostBinary("timeout", "timeout"),
   bash: detectHostBinary("bash", "/bin/bash"),
 };
 
@@ -481,7 +539,7 @@ function resolveRuntimeWorkingDirectory(serverRoot: string, configuredWorkingDir
     ? path.resolve(normalized)
     : path.resolve(serverRoot, normalized);
 
-  if (!absolute.startsWith(serverRoot)) {
+  if (!isWithinPath(serverRoot, absolute)) {
     return serverRoot;
   }
 
@@ -496,7 +554,7 @@ export function getSecurePath(serverId: string, userRelPath: string = ""): strin
   }
 
   const targetPath = path.resolve(serverRoot, userRelPath.replace(/^\/+/, ""));
-  if (!targetPath.startsWith(serverRoot)) {
+  if (!isWithinPath(serverRoot, targetPath)) {
     throw new Error("SECURITY_ALERT: Path traversal detected");
   }
 
@@ -563,6 +621,7 @@ export function getServerConsolePaths(serverId: string) {
     runtimeDir,
     inputLogPath: path.join(runtimeDir, "console-input.log"),
     outputLogPath: path.join(runtimeDir, "console-output.log"),
+    inputPipePath: path.join(runtimeDir, "console-input.pipe"),
     stateFilePath: path.join(runtimeDir, "state.json"),
   };
 }
@@ -593,6 +652,12 @@ function readRuntimeState(serverId: string): RuntimeState {
 function appendConsoleOutput(serverId: string, line: string) {
   const { outputLogPath } = getServerConsolePaths(serverId);
   fs.mkdirSync(path.dirname(outputLogPath), { recursive: true });
+  try {
+    if (fs.existsSync(outputLogPath) && fs.statSync(outputLogPath).size > MAX_CONSOLE_LOG_BYTES) {
+      const tail = fs.readFileSync(outputLogPath).subarray(-Math.floor(MAX_CONSOLE_LOG_BYTES * 0.75));
+      fs.writeFileSync(outputLogPath, Buffer.concat([Buffer.from(`[Birdserver] Console log rotated at ${new Date().toISOString()}\\n`), tail]));
+    }
+  } catch {}
   fs.appendFileSync(outputLogPath, `${line}\n`, "utf-8");
 }
 
@@ -744,9 +809,22 @@ export function initializeServerFiles(serverId: string, templateCategory: string
   ensureNodeConsoleSupport(indexPath);
 }
 
+function detectPackageManager(projectRoot: string) {
+  if (fs.existsSync(path.join(projectRoot, "pnpm-lock.yaml"))) {
+    return { name: "pnpm", binary: hostBinaries.pnpm, install: "install --frozen-lockfile --reporter=append-only" };
+  }
+  if (fs.existsSync(path.join(projectRoot, "yarn.lock"))) {
+    return { name: "yarn", binary: hostBinaries.yarn, install: "install --non-interactive --ignore-engines" };
+  }
+  if (fs.existsSync(path.join(projectRoot, "package-lock.json")) || fs.existsSync(path.join(projectRoot, "npm-shrinkwrap.json"))) {
+    return { name: "npm-ci", binary: hostBinaries.npm, install: "ci --no-audit --no-fund --progress=false --fetch-retries=3 --fetch-timeout=300000" };
+  }
+  return { name: "npm", binary: hostBinaries.npm, install: "install --no-audit --no-fund --progress=false --fetch-retries=3 --fetch-timeout=300000" };
+}
+
 function getDependencyKey(projectRoot: string, runtimeVersion: string, extra = "") {
   const hash = createHash("sha256");
-  for (const name of ["package.json", "package-lock.json", "npm-shrinkwrap.json"]) {
+  for (const name of ["package.json", "package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock"]) {
     const filePath = path.join(projectRoot, name);
     if (fs.existsSync(filePath)) {
       hash.update(name);
@@ -756,6 +834,108 @@ function getDependencyKey(projectRoot: string, runtimeVersion: string, extra = "
   hash.update(`node:${runtimeVersion}`);
   hash.update(`extra:${extra}`);
   return hash.digest("hex").slice(0, 24);
+}
+
+type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+
+type JobUpdate = Partial<{
+  status: JobStatus;
+  phase: string;
+  progress: number;
+  pid: number | null;
+  lastOutput: string;
+  errorCode: string | null;
+  startedAt: Date;
+  finishedAt: Date;
+  cancelledAt: Date;
+  updatedAt: Date;
+}>;
+
+function newJobId() {
+  return `job_${cryptoRandomString(16)}`;
+}
+
+async function createServerJob(serverId: string, ownerId: string | null | undefined, kind: string, command: string) {
+  const id = newJobId();
+  try {
+    await ensureDatabaseConnection();
+    await db.insert(serverJobs).values({
+      id,
+      serverId,
+      ownerId: ownerId || null,
+      kind,
+      status: "running",
+      phase: "creating",
+      progress: 1,
+      command: command.slice(0, 2_000),
+      createdAt: new Date(),
+      startedAt: new Date(),
+      updatedAt: new Date(),
+    });
+  } catch (error) {
+    console.warn(`[Birdserver] job ${id} persistence unavailable:`, error instanceof Error ? error.message : error);
+  }
+  return id;
+}
+
+async function updateServerJob(jobId: string | undefined, update: JobUpdate) {
+  if (!jobId) return;
+  try {
+    await db.update(serverJobs).set({ ...update, updatedAt: new Date() }).where(eq(serverJobs.id, jobId));
+  } catch (error) {
+    console.warn(`[Birdserver] job ${jobId} update skipped:`, error instanceof Error ? error.message : error);
+  }
+}
+
+function startJobWatcher(serverId: string, jobId: string, outputLogPath: string, runtimeReadyMarker: string) {
+  const existing = jobWatchers.get(serverId);
+  if (existing) clearInterval(existing);
+  let lastSignature = "";
+
+  const watcher = setInterval(() => {
+    try {
+      const output = fs.existsSync(outputLogPath) ? fs.readFileSync(outputLogPath, "utf8").slice(-8_000) : "";
+      let phase = "installing";
+      let progress = 15;
+      if (/resolv|download|fetch/i.test(output)) {
+        phase = "resolving dependencies";
+        progress = 30;
+      }
+      if (/linking|building native|npm (?:install|ci)/i.test(output)) {
+        phase = "building dependencies";
+        progress = 55;
+      }
+      if (/dependencies installation phase completed|dependencies verified from cache/i.test(output)) {
+        phase = "finalizing dependencies";
+        progress = 85;
+      }
+      const ready = fs.existsSync(runtimeReadyMarker);
+      if (ready) {
+        phase = "running";
+        progress = 100;
+      }
+      const signature = `${phase}:${progress}:${ready ? "ready" : Math.floor(output.length / 1_000)}`;
+      if (signature === lastSignature) return;
+      lastSignature = signature;
+      void updateServerJob(jobId, {
+        status: ready ? "succeeded" : "running",
+        phase,
+        progress,
+        lastOutput: output.slice(-4_000),
+        ...(ready ? { finishedAt: new Date() } : {}),
+      });
+      if (ready) stopJobWatcher(serverId);
+    } catch {
+      // A disappearing server directory is expected during deletion.
+    }
+  }, 1_000);
+  jobWatchers.set(serverId, watcher);
+}
+
+function stopJobWatcher(serverId: string) {
+  const watcher = jobWatchers.get(serverId);
+  if (watcher) clearInterval(watcher);
+  jobWatchers.delete(serverId);
 }
 
 const startLocks = new Map<string, Promise<boolean>>();
@@ -768,6 +948,20 @@ export async function startServer(serverId: string): Promise<boolean> {
   startLocks.set(serverId, operation);
   try {
     return await operation;
+  } catch (error) {
+    const failedJobId = readRuntimeState(serverId).jobId;
+    await updateServerJob(failedJobId, {
+      status: "failed",
+      phase: "start failed",
+      progress: 0,
+      pid: null,
+      errorCode: "START_FAILED",
+      finishedAt: new Date(),
+      lastOutput: error instanceof Error ? error.message : String(error),
+    });
+    await db.update(servers).set({ status: "error", pid: 0, updatedAt: new Date() }).where(eq(servers.id, serverId)).catch(() => undefined);
+    writeRuntimeState(serverId, { phase: "error", pid: null, lastExitAt: new Date().toISOString() });
+    throw error;
   } finally {
     if (startLocks.get(serverId) === operation) startLocks.delete(serverId);
   }
@@ -798,6 +992,8 @@ async function startServerInternal(serverId: string): Promise<boolean> {
   }
 
   const serverRoot = getServerDirectory(serverId);
+  writeRuntimeState(serverId, { phase: "creating", pid: null });
+  await db.update(servers).set({ status: "creating", pid: 0, updatedAt: new Date() }).where(eq(servers.id, serverId)).catch(() => undefined);
   initializeServerFiles(serverId, templateCategory);
   const runtimeWorkingDirectory = resolveRuntimeWorkingDirectory(serverRoot, server.workingDirectory);
   const runtimeContainerAlias = prepareRuntimeContainerAlias(serverId, runtimeWorkingDirectory);
@@ -808,6 +1004,7 @@ async function startServerInternal(serverId: string): Promise<boolean> {
   };
   const selectedNodeVersion = normalizeNodeVersion(initialEnv.NODE_RUNTIME_VERSION, server.dockerImage, templateCategory);
   const runtime = await ensureNodeRuntime(serverId, selectedNodeVersion);
+  await db.update(servers).set({ status: "installing", updatedAt: new Date() }).where(eq(servers.id, serverId)).catch(() => undefined);
 
   const runtimeEnv: NodeJS.ProcessEnv = {
     ...process.env,
@@ -847,7 +1044,10 @@ async function startServerInternal(serverId: string): Promise<boolean> {
   );
   const dependencyMarker = path.join(getRuntimeDirectory(serverId), `deps-${dependencyKey}.ok`);
   const runtimeReadyMarker = path.join(getRuntimeDirectory(serverId), "runtime-ready");
-  const hasExplicitNodeInstall = /\bnpm\s+(?:install|ci)\b/.test(rawStartupCommand);
+  const hasExplicitNodeInstall = /\b(?:npm|pnpm|yarn)\s+(?:install|ci)\b/.test(rawStartupCommand);
+  const jobId = await createServerJob(serverId, server.userId, "runtime", rawStartupCommand);
+  writeRuntimeState(serverId, { jobId, phase: "installing", pid: null });
+  cancelRequested.delete(serverId);
   try { fs.rmSync(runtimeReadyMarker, { force: true }); } catch {}
 
   // Dependency installation is real, but it is cached by the package manifests.
@@ -886,32 +1086,39 @@ process.exit(0);
 
   const dependencyStatusPath = path.join(getRuntimeDirectory(serverId), "dependency-status.json");
 
+  const packageManager = detectPackageManager(runtimeWorkingDirectory);
+  const installTimeoutSeconds = Math.max(120, Math.min(7_200, Number(process.env.SERVER_INSTALL_TIMEOUT_SECONDS || 1_800)));
+  const dependencyCommand = `${shellQuote(packageManager.binary)} ${packageManager.install}`;
   const dependencyBootstrap = [
     'set -Eeuo pipefail',
     `echo '[Birdserver] Node runtime: ${runtime.version} (selected=${selectedNodeVersion})'`,
-    `  if [[ -f package.json ]]; then`,
+    `if [[ -f package.json ]]; then`,
     `  export NODE_OPTIONS=${shellQuote(nodeOptions)}`,
     `  dependency_needs_install=0`,
     `  if [[ ! -d node_modules ]]; then dependency_needs_install=1; echo '[Birdserver] node_modules is missing; dependency repair required.'; fi`,
     `  if [[ "$dependency_needs_install" -eq 0 && -f ${shellQuote(dependencyMarker)} ]]; then`,
     `    if ! ${shellQuote(runtime.node)} ${shellQuote(dependencyCheckScriptPath)} > ${shellQuote(dependencyStatusPath)} 2>&1; then`,
     `      dependency_needs_install=1`,
-    `      echo '[Birdserver] Cached dependency marker is stale; required packages are missing. Repairing dependencies...'`,
+    `      echo '[Birdserver] Cached dependency marker is stale; repairing dependencies...'`,
     `    fi`,
     `  else`,
     `    dependency_needs_install=1`,
     `  fi`,
     `  if [[ "$dependency_needs_install" -eq 1 ]]; then`,
     `    if [[ "${hasExplicitNodeInstall ? "1" : "0"}" -eq 1 ]]; then`,
-    `      echo '[Birdserver] Startup command contains npm install/ci; running that command once without a duplicate bootstrap.'`,
+    `      echo '[Birdserver] Startup command contains explicit install; preserving user command.'`,
     `    else`,
-    `      echo '[Birdserver] Installing project dependencies aggressively (full speed, unrestricted network & CPU)...'`,
-    `      if ! command -v ${shellQuote(runtime.npm)} >/dev/null 2>&1; then echo '[Birdserver] npm is unavailable for the selected Node runtime.'; exit 127; fi`,
-    `      if ! ${shellQuote(runtime.npm)} install --no-audit --no-fund --progress=false --fetch-retries=5 --fetch-timeout=300000; then`,
-    `        echo '[Birdserver] npm install encountered conflict; cleaning cache and retrying with --force --legacy-peer-deps...'`,
-    `        rm -rf node_modules/.cache package-lock.json 2>/dev/null || true`,
-    `        if ! ${shellQuote(runtime.npm)} install --no-audit --no-fund --progress=false --force --legacy-peer-deps; then`,
-    `          echo '[Birdserver] npm install failed after aggressive retry; check package.json.'`,
+    `      echo '[Birdserver] Dependency manager: ${packageManager.name}'`,
+    `      if ! command -v ${shellQuote(packageManager.binary)} >/dev/null 2>&1; then echo '[Birdserver] Selected package manager is unavailable on this host.'; exit 127; fi`,
+    `      echo '[Birdserver] Installing dependencies with a ${installTimeoutSeconds}s stage timeout.'`,
+    `      if ! ${shellQuote(hostBinaries.timeout)} --signal=TERM --kill-after=30s ${installTimeoutSeconds}s ${dependencyCommand}; then`,
+    `        echo '[Birdserver] Primary dependency install failed; retrying once with offline cache only.'`,
+    `        if [[ '${packageManager.name}' == 'npm-ci' || '${packageManager.name}' == 'npm' ]]; then`,
+    `          if ! ${shellQuote(hostBinaries.timeout)} --signal=TERM --kill-after=30s 300s ${shellQuote(runtime.npm)} install --no-audit --no-fund --progress=false --prefer-offline --fetch-retries=1; then`,
+    `            echo '[Birdserver] Dependency installation failed after one bounded retry.'`,
+    `            exit 1`,
+    `          fi`,
+    `        else`,
     `          exit 1`,
     `        fi`,
     `      fi`,
@@ -919,16 +1126,16 @@ process.exit(0);
     `    touch ${shellQuote(dependencyMarker)}`,
     `    echo '[Birdserver] Dependencies installation phase completed successfully.'`,
     `  else`,
-    `    echo '[Birdserver] Dependencies verified from cache; skipping npm install.'`,
+    `    echo '[Birdserver] Dependencies verified from cache; skipping install.'`,
     `  fi`,
     `else`,
-    `  echo '[Birdserver] No package.json found; skipping npm dependency installation.'`,
+    `  echo '[Birdserver] No package.json found; skipping dependency installation.'`,
     `fi`,
-    'if [[ ! -z "${NODE_PACKAGES}" ]]; then ' + shellQuote(runtime.npm) + ' install --no-audit --no-fund --progress=false --prefer-offline ${NODE_PACKAGES}; fi',
-    'if [[ ! -z "${UNNODE_PACKAGES}" ]]; then ' + shellQuote(runtime.npm) + ' uninstall ${UNNODE_PACKAGES}; fi',
+    `if [[ -n "\${NODE_PACKAGES}" ]]; then ${shellQuote(runtime.npm)} install --no-audit --no-fund --progress=false --prefer-offline \${NODE_PACKAGES}; fi`,
+    `if [[ -n "\${UNNODE_PACKAGES}" ]]; then ${shellQuote(runtime.npm)} uninstall \${UNNODE_PACKAGES}; fi`,
     `if [[ -f requirements.txt ]]; then if ! command -v python3 >/dev/null 2>&1; then echo '[Birdserver] requirements.txt exists but python3 is unavailable.'; exit 127; fi; python3 -m pip install --no-input -r requirements.txt || python3 -m pip install --no-input --user -r requirements.txt; fi`,
-    'if [[ ! -z "${PYTHON_PACKAGES}" ]]; then if ! command -v python3 >/dev/null 2>&1; then echo "[Birdserver] PYTHON_PACKAGES requested but python3 is unavailable."; exit 127; fi; python3 -m pip install --no-input --user ${PYTHON_PACKAGES} || python3 -m pip install --no-input ${PYTHON_PACKAGES}; fi',
-    'if [[ ! -z "${OS_PACKAGES}" ]]; then if ! command -v apt-get >/dev/null 2>&1 || [[ "$(id -u)" != "0" ]]; then echo "[Birdserver] OS_PACKAGES requested, but apt-get/root access is unavailable on this host."; exit 126; fi; DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${OS_PACKAGES}; fi',
+    `if [[ -n "\${PYTHON_PACKAGES}" ]]; then if ! command -v python3 >/dev/null 2>&1; then echo '[Birdserver] PYTHON_PACKAGES requested but python3 is unavailable.'; exit 127; fi; python3 -m pip install --no-input --user \${PYTHON_PACKAGES} || python3 -m pip install --no-input \${PYTHON_PACKAGES}; fi`,
+    `if [[ -n "\${OS_PACKAGES}" ]]; then if ! command -v apt-get >/dev/null 2>&1 || [[ "$(id -u)" != "0" ]]; then echo '[Birdserver] OS_PACKAGES requested, but apt-get/root access is unavailable on this host.'; exit 126; fi; DEBIAN_FRONTEND=noninteractive apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \${OS_PACKAGES}; fi`,
     `echo '[Birdserver] Runtime preparation complete. Starting configured command...'`,
   ].join('\n');
 
@@ -944,7 +1151,7 @@ process.exit(0);
   // configured start command.
   const finalStartupCommand = hasExplicitNodeInstall
     ? baseStartupCommand.replace(
-        /(\bnpm\s+(?:install|ci)\b[^;&]*)(\s*(?:&&|;)\s*)/i,
+        /(\b(?:npm|pnpm|yarn)\s+(?:install|ci)\b[^;&]*)(\s*(?:&&|;)\s*)/i,
         `$1 && ${readinessMarkerCommand} && `
       )
     : `${readinessMarkerCommand} && ${baseStartupCommand}`;
@@ -957,17 +1164,12 @@ process.exit(0);
     "utf-8"
   );
 
-  // Run the runtime from a real script file instead of embedding the whole
-  // dependency/startup program inside `bash -lc '...'`. The old implementation
-  // could produce Bash syntax errors (exit code 2) because compound statements
-  // were joined with semicolons such as `then;`.
-  //
-  // The FIFO is only used for console input. The tracked child is the wrapper
-  // process whose lifetime follows the real bot process, so a crashed bot is
-  // immediately marked stopped instead of leaving a stale RUNNING state.
+  // Keep the startup script separate from the supervisor. This avoids shell
+  // quoting bugs and gives the panel one process-group PID to terminate.
   const runtimeDir = getRuntimeDirectory(serverId);
   const inputPipePath = path.join(runtimeDir, "console-input.pipe");
   const startupScriptPath = path.join(runtimeDir, "start-runtime.sh");
+  const supervisorScriptPath = path.join(runtimeDir, "supervisor.sh");
 
   try {
     if (fs.existsSync(inputPipePath)) fs.rmSync(inputPipePath, { force: true });
@@ -989,22 +1191,27 @@ process.exit(0);
     mode: 0o700,
   });
 
-  const wrapperCommand = [
+  const supervisorScript = [
+    "#!/usr/bin/env bash",
     "set -Eeuo pipefail",
     `rm -f ${shellQuote(inputPipePath)}`,
     `mkfifo -m 600 ${shellQuote(inputPipePath)}`,
+    `cleanup() { kill \"$feeder\" 2>/dev/null || true; wait \"$feeder\" 2>/dev/null || true; rm -f ${shellQuote(inputPipePath)}; }`,
+    "trap cleanup EXIT",
     `tail -n 0 -F ${shellQuote(inputLogPath)} > ${shellQuote(inputPipePath)} & feeder=$!`,
     "set +e",
     `${hostBinaries.bash} ${shellQuote(startupScriptPath)} < ${shellQuote(inputPipePath)} >> ${shellQuote(outputLogPath)} 2>&1`,
     "runtime_rc=$?",
     "set -e",
-    'kill "$feeder" 2>/dev/null || true',
-    'wait "$feeder" 2>/dev/null || true',
-    `rm -f ${shellQuote(inputPipePath)}`,
-    'exit "$runtime_rc"',
-  ].join("; ");
+    "exit \"$runtime_rc\"",
+  ].join("\n");
 
-  const child = spawn(hostBinaries.bash, ["-lc", wrapperCommand], {
+  fs.writeFileSync(supervisorScriptPath, supervisorScript + "\n", {
+    encoding: "utf-8",
+    mode: 0o700,
+  });
+
+  const child = spawn(hostBinaries.bash, [supervisorScriptPath], {
     cwd: runtimeWorkingDirectory,
     env: runtimeEnv,
     detached: true,
@@ -1012,14 +1219,27 @@ process.exit(0);
   });
 
   child.on("exit", (code, signal) => {
+    const wasCancelled = cancelRequested.delete(serverId);
     const exitMessage = `[Birdserver] Runtime exited (code=${code ?? "null"}, signal=${signal ?? "none"}).`;
     appendConsoleOutput(serverId, exitMessage);
-    writeRuntimeState(serverId, { lastExitAt: new Date().toISOString(), pid: null, phase: "stopped" });
+    stopJobWatcher(serverId);
+    activeProcesses.delete(serverId);
+    writeRuntimeState(serverId, { lastExitAt: new Date().toISOString(), pid: null, phase: wasCancelled ? "stopped" : (code === 0 ? "stopped" : "error") });
+    void updateServerJob(jobId, {
+      status: wasCancelled ? "cancelled" : (code === 0 ? "succeeded" : "failed"),
+      phase: wasCancelled ? "cancelled" : (code === 0 ? "stopped" : "runtime failed"),
+      progress: wasCancelled ? 0 : (code === 0 ? 100 : 0),
+      pid: null,
+      errorCode: code && code !== 0 ? `EXIT_${code}` : null,
+      finishedAt: new Date(),
+      lastOutput: exitMessage,
+    });
     void db.update(servers)
-      .set({ status: "stopped", pid: 0, updatedAt: new Date() })
+      .set({ status: wasCancelled ? "stopped" : (code === 0 ? "stopped" : "error"), pid: 0, updatedAt: new Date() })
       .where(eq(servers.id, serverId))
       .catch((error) => console.warn(`[Birdserver] Exit status sync skipped for ${serverId}:`, error));
   });
+  activeProcesses.set(serverId, child);
   child.unref();
 
   // Persist runtime state first. The process itself is the source of truth
@@ -1030,9 +1250,11 @@ process.exit(0);
     startedAt: new Date().toISOString(),
     lastCommand: server.startupCommand,
     pid: runtimePid,
+    jobId,
     phase: "installing",
     lastExitAt: undefined,
   });
+  startJobWatcher(serverId, jobId, outputLogPath, runtimeReadyMarker);
 
   try {
     await db
@@ -1072,35 +1294,91 @@ process.exit(0);
   return true;
 }
 
+async function cancelServerJobs(serverId: string, reason: "stop" | "delete" | "kill") {
+  try {
+    const jobs = await db.query.serverJobs.findMany({ where: eq(serverJobs.serverId, serverId) });
+    for (const job of jobs) {
+      if (job.status !== "running" && job.status !== "queued") continue;
+      await db.update(serverJobs).set({
+        status: "cancelled",
+        phase: `cancelled: ${reason}`,
+        progress: 0,
+        pid: null,
+        cancelledAt: new Date(),
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(eq(serverJobs.id, job.id));
+    }
+  } catch (error) {
+    console.warn(`[Birdserver] job cancellation skipped for ${serverId}:`, error instanceof Error ? error.message : error);
+  }
+}
+
+function signalProcessGroup(pid: number, signal: NodeJS.Signals) {
+  try {
+    process.kill(-pid, signal);
+    return true;
+  } catch {
+    try {
+      process.kill(pid, signal);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+async function waitForProcessExit(pid: number, timeoutMs: number) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isPidAlive(pid)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  return !isPidAlive(pid);
+}
+
+async function terminateServerProcess(serverId: string, reason: "stop" | "delete" | "kill", force = false) {
+  const state = readRuntimeState(serverId);
+  const runtimePid = state.pid ?? null;
+  cancelRequested.add(serverId);
+  stopJobWatcher(serverId);
+  await cancelServerJobs(serverId, reason);
+
+  if (runtimePid && isPidAlive(runtimePid)) {
+    signalProcessGroup(runtimePid, force ? "SIGKILL" : "SIGTERM");
+    if (!force && !(await waitForProcessExit(runtimePid, STOP_GRACE_PERIOD_MS))) {
+      appendConsoleOutput(serverId, `[Birdserver] Grace period elapsed; forcing process group ${runtimePid} to exit.`);
+      signalProcessGroup(runtimePid, "SIGKILL");
+      await waitForProcessExit(runtimePid, 2_000);
+    }
+  }
+
+  activeProcesses.delete(serverId);
+  processMetricsCache.delete(serverId);
+  diskUsageCache.delete(serverId);
+  try {
+    const { inputPipePath } = getServerConsolePaths(serverId);
+    if (fs.existsSync(inputPipePath)) fs.rmSync(inputPipePath, { force: true });
+  } catch {}
+  writeRuntimeState(serverId, { lastExitAt: new Date().toISOString(), pid: null, phase: "stopped" });
+}
+
 export async function stopServer(serverId: string): Promise<boolean> {
   const server = await db.query.servers.findFirst({ where: eq(servers.id, serverId) });
   if (!server) throw new Error("Server not found");
 
-  const runtimePid = readRuntimeState(serverId).pid ?? server.pid ?? null;
-  if (runtimePid && isPidAlive(runtimePid)) {
-    try {
-      process.kill(-runtimePid, "SIGTERM");
-    } catch {
-      try {
-        process.kill(runtimePid, "SIGTERM");
-      } catch {}
-    }
-  }
-
   appendConsoleOutput(serverId, `[Birdserver] Stop requested at ${new Date().toISOString()}`);
-  writeRuntimeState(serverId, { lastExitAt: new Date().toISOString(), pid: null, phase: "stopped" });
+  try {
+    await db.update(servers).set({ status: "stopping", updatedAt: new Date() }).where(eq(servers.id, serverId));
+  } catch {}
+  await terminateServerProcess(serverId, "stop");
 
   try {
-    await db
-      .update(servers)
-      // PID 0 is the persisted "not running" sentinel.
-      .set({ status: "stopped", pid: 0, updatedAt: new Date() })
-      .where(eq(servers.id, serverId));
+    await db.update(servers).set({ status: "stopped", pid: 0, updatedAt: new Date() }).where(eq(servers.id, serverId));
   } catch (dbError) {
     console.warn(`[Birdserver] Database stop sync skipped for ${serverId}:`, dbError);
-    appendConsoleOutput(serverId, `[Birdserver] Runtime stopped.`);
   }
-
+  appendConsoleOutput(serverId, `[Birdserver] Runtime stopped cleanly.`);
   return true;
 }
 
@@ -1114,32 +1392,154 @@ export async function killServer(serverId: string): Promise<boolean> {
   const server = await db.query.servers.findFirst({ where: eq(servers.id, serverId) });
   if (!server) throw new Error("Server not found");
 
-  const runtimePid = readRuntimeState(serverId).pid ?? server.pid ?? null;
-  if (runtimePid && isPidAlive(runtimePid)) {
+  appendConsoleOutput(serverId, `[Birdserver] Kill requested at ${new Date().toISOString()}`);
+  await terminateServerProcess(serverId, "kill", true);
+  try {
+    await db.update(servers).set({ status: "stopped", pid: 0, updatedAt: new Date() }).where(eq(servers.id, serverId));
+  } catch (dbError) {
+    console.warn(`[Birdserver] Database kill sync skipped for ${serverId}:`, dbError);
+  }
+  return true;
+}
+
+function walkStorageBytes(root: string): number {
+  if (!fs.existsSync(root)) return 0;
+  let total = 0;
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    const target = path.join(root, entry.name);
     try {
-      process.kill(-runtimePid, "SIGKILL");
-    } catch {
-      try {
-        process.kill(runtimePid, "SIGKILL");
-      } catch {}
+      const stat = fs.lstatSync(target);
+      if (stat.isSymbolicLink()) continue;
+      total += stat.isDirectory() ? walkStorageBytes(target) : stat.size;
+    } catch {}
+  }
+  return total;
+}
+
+export function getCacheSummary() {
+  const temporaryRoots = [SERVERS_DIR, BACKUPS_DIR, path.join(BASE_STORAGE_DIR, "system", "theme-media")];
+  const temporaryFiles: string[] = [];
+  for (const root of temporaryRoots) {
+    if (!fs.existsSync(root)) continue;
+    const walk = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const target = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(target);
+        else if (/^(?:\.upload-|node-download-|\.extract-|failed-|.*\.tmp-)/i.test(entry.name)) temporaryFiles.push(target);
+      }
+    };
+    walk(root);
+  }
+  return {
+    cacheBytes: walkStorageBytes(SERVERS_DIR) + walkStorageBytes(BACKUPS_DIR),
+    serverStorageBytes: walkStorageBytes(SERVERS_DIR),
+    backupBytes: walkStorageBytes(BACKUPS_DIR),
+    temporaryFiles: temporaryFiles.length,
+    temporaryBytes: temporaryFiles.reduce((sum, target) => {
+      try { return sum + fs.statSync(target).size; } catch { return sum; }
+    }, 0),
+    lastCleanup: null,
+  };
+}
+
+export async function cleanSafeCache(mode: "cache" | "orphan" | "temp" | "all" = "all") {
+  const existingServers = await db.query.servers.findMany({ columns: { id: true } });
+  const serverIds = new Set(existingServers.map((server) => server.id));
+  let removedFiles = 0;
+  let removedBytes = 0;
+
+  const removeIfSafe = (target: string) => {
+    if (!isWithinPath(BASE_STORAGE_DIR, target) || target === BASE_STORAGE_DIR || !fs.existsSync(target)) return;
+    try {
+      const stat = fs.lstatSync(target);
+      if (!stat.isSymbolicLink()) removedBytes += stat.isDirectory() ? walkStorageBytes(target) : stat.size;
+      fs.rmSync(target, { recursive: true, force: true });
+      removedFiles += 1;
+    } catch {}
+  };
+
+  if (mode === "orphan" || mode === "all") {
+    if (fs.existsSync(SERVERS_DIR)) {
+      for (const entry of fs.readdirSync(SERVERS_DIR, { withFileTypes: true })) {
+        if (entry.isDirectory() && !serverIds.has(entry.name)) removeIfSafe(path.join(SERVERS_DIR, entry.name));
+      }
+    }
+    const referencedBackups = new Set<string>();
+    try {
+      const rows = await db.query.backups.findMany({ columns: { filePath: true } });
+      for (const row of rows) referencedBackups.add(path.resolve(row.filePath));
+    } catch {}
+    if (fs.existsSync(BACKUPS_DIR)) {
+      for (const entry of fs.readdirSync(BACKUPS_DIR, { withFileTypes: true })) {
+        const target = path.join(BACKUPS_DIR, entry.name);
+        if (!referencedBackups.has(path.resolve(target))) removeIfSafe(target);
+      }
     }
   }
 
-  appendConsoleOutput(serverId, `[Birdserver] Kill requested at ${new Date().toISOString()}`);
-  writeRuntimeState(serverId, { lastExitAt: new Date().toISOString(), pid: null, phase: "stopped" });
-
-  try {
-    await db
-      .update(servers)
-      // PID 0 is the persisted "not running" sentinel.
-      .set({ status: "stopped", pid: 0, updatedAt: new Date() })
-      .where(eq(servers.id, serverId));
-  } catch (dbError) {
-    console.warn(`[Birdserver] Database stop sync skipped for ${serverId}:`, dbError);
-    appendConsoleOutput(serverId, `[Birdserver] Runtime stopped.`);
+  if (mode === "temp" || mode === "all" || mode === "cache") {
+    const roots = [SERVERS_DIR, path.join(BASE_STORAGE_DIR, "system", "theme-media")];
+    const tempPattern = /^(?:\.upload-|node-download-|\.extract-|failed-|.*\.tmp-)/i;
+    const walk = (dir: string) => {
+      if (!fs.existsSync(dir)) return;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const target = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(target);
+        else if (tempPattern.test(entry.name)) removeIfSafe(target);
+      }
+    };
+    for (const root of roots) walk(root);
   }
 
-  return true;
+  return { removedFiles, removedBytes, summary: getCacheSummary() };
+}
+
+const globalForMaintenance = globalThis as typeof globalThis & { __birdserverCleanupTimer?: ReturnType<typeof setInterval> };
+if (!globalForMaintenance.__birdserverCleanupTimer && process.env.BIRDSERVER_DISABLE_MAINTENANCE !== "1") {
+  const cleanupTimer = setInterval(() => {
+    void cleanSafeCache("temp").catch((error) => {
+      console.warn("[Birdserver] scheduled temporary cleanup skipped:", error instanceof Error ? error.message : error);
+    });
+  }, 6 * 60 * 60 * 1_000);
+  cleanupTimer.unref?.();
+  globalForMaintenance.__birdserverCleanupTimer = cleanupTimer;
+}
+
+export async function cleanupServerResources(serverId: string): Promise<{ removedFiles: number; removedBackupFiles: number }> {
+  const serverRoot = path.resolve(SERVERS_DIR, serverId);
+  if (!isWithinPath(SERVERS_DIR, serverRoot) || serverRoot === SERVERS_DIR) {
+    throw new Error("SECURITY_ALERT: invalid server storage path");
+  }
+
+  await terminateServerProcess(serverId, "delete", true);
+  let removedFiles = 0;
+  let removedBackupFiles = 0;
+
+  try {
+    if (fs.existsSync(serverRoot)) {
+      fs.rmSync(serverRoot, { recursive: true, force: true });
+      removedFiles = 1;
+    }
+  } catch (error) {
+    throw new Error(`Server storage cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  try {
+    const backupRows = await db.query.backups.findMany({ where: eq(backups.serverId, serverId) });
+    for (const backup of backupRows) {
+      const backupPath = path.resolve(backup.filePath);
+      if (!isWithinPath(BACKUPS_DIR, backupPath) || backupPath === BACKUPS_DIR) continue;
+      if (fs.existsSync(backupPath)) {
+        fs.rmSync(backupPath, { force: true });
+        removedBackupFiles += 1;
+      }
+    }
+    await db.delete(backups).where(eq(backups.serverId, serverId));
+  } catch (error) {
+    console.warn(`[Birdserver] backup cleanup skipped for ${serverId}:`, error instanceof Error ? error.message : error);
+  }
+
+  return { removedFiles, removedBackupFiles };
 }
 
 export async function sendCommandToServer(serverId: string, command: string): Promise<boolean> {
@@ -1166,6 +1566,7 @@ export function getServerMetrics(serverId: string) {
 
   refreshDiskUsage(serverId, serverRoot);
   const diskBytes = diskUsageCache.get(serverId)?.bytes || 0;
+  const network = refreshNetworkUsage();
 
   if (!pid || !isPidAlive(pid)) {
     return {
@@ -1173,6 +1574,8 @@ export function getServerMetrics(serverId: string) {
       cpuPercent: 0,
       memoryBytes: 0,
       diskBytes,
+      networkRxBytes: network.rxBytes,
+      networkTxBytes: network.txBytes,
       uptimeSeconds: 0,
     };
   }
@@ -1187,6 +1590,8 @@ export function getServerMetrics(serverId: string) {
     cpuPercent: processMetrics.cpuPercent,
     memoryBytes: processMetrics.memoryBytes,
     diskBytes,
+    networkRxBytes: network.rxBytes,
+    networkTxBytes: network.txBytes,
     uptimeSeconds,
   };
 }

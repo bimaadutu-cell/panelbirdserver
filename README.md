@@ -61,3 +61,9 @@ Use `.env.example` as the reference.
 - Node 22 is the default for Telegram/WhatsApp templates because Node 23 is upstream EOL; Node 23.11.1 remains available when explicitly selected.
 - Downloaded archives are checked against the official `SHASUMS256.txt` before extraction.
 - The extracted `node` binary is version-validated before dependency installation or bot startup.
+
+## V15 Production Runtime Upgrade
+
+The production hardening work is documented in [`UPGRADE_V15_PRODUCTION.md`](./UPGRADE_V15_PRODUCTION.md). It covers the shared PostgreSQL connection gate, `server_jobs` lifecycle tracking, process-group termination, dependency manager detection, safe cleanup, actual telemetry, console log rotation, streaming media upload up to 2 GiB, HTTP Range playback, Cache Manager, and the server-page media preview.
+
+The panel reports host/process scope honestly. It does not claim to add Railway CPU/RAM or provide Docker-level isolation when the deployment is a single service. Attach persistent storage for bot files, backups, theme media, and WhatsApp auth state that must survive redeploys.

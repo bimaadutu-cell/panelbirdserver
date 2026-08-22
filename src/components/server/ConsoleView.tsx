@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import Image from "next/image";
 import QRCode from "qrcode";
 import { Play, Square, RotateCw, Skull, Trash2, Send, Terminal, Circle, ScanQrCode } from "lucide-react";
 
@@ -181,29 +182,22 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
 
   useEffect(() => {
     let active = true;
+    if (!qrPayload) return () => { active = false; };
 
-    if (qrPayload) {
-      QRCode.toDataURL(qrPayload, {
-        margin: 1,
-        width: 320,
-        errorCorrectionLevel: "M",
-        color: { dark: "#111827", light: "#ffffff" },
-      })
-        .then((url) => active && setQrImageUrl(url))
-        .catch(() => active && setQrImageUrl(null));
-      return () => {
-        active = false;
-      };
-    }
+    QRCode.toDataURL(qrPayload, {
+      margin: 1,
+      width: 320,
+      errorCorrectionLevel: "M",
+      color: { dark: "#111827", light: "#ffffff" },
+    })
+      .then((url) => active && setQrImageUrl(url))
+      .catch(() => active && setQrImageUrl(null));
+    return () => {
+      active = false;
+    };
+  }, [qrPayload]);
 
-    if (asciiQrLines.length) {
-      setQrImageUrl(parseUnicodeQrToSvg(asciiQrLines));
-      return;
-    }
-
-    setQrImageUrl(null);
-    return;
-  }, [qrPayload, asciiQrLines]);
+  const displayQrImageUrl = qrPayload ? qrImageUrl : asciiQrLines.length ? parseUnicodeQrToSvg(asciiQrLines) : null;
 
   useEffect(() => {
     if (!autoScroll) return;
@@ -332,7 +326,7 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
         </div>
       </div>
 
-      {qrImageUrl && (
+      {displayQrImageUrl && (
         <div className="rounded-2xl border border-zinc-800 bg-zinc-950/90 p-4 shadow-2xl">
           <div className="mx-auto w-full max-w-md overflow-hidden rounded-[28px] border border-zinc-200 bg-white shadow-[0_25px_80px_rgba(255,255,255,0.08)]">
             <div className="flex items-center justify-between border-b border-zinc-200 px-5 py-4">
@@ -348,7 +342,7 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
               <div className="mb-4 rounded-2xl bg-zinc-100 px-4 py-3 text-center text-xs font-medium text-zinc-600">QR dirapikan Birdserver agar tetap jelas, medium, dan tidak menutupi console utama.</div>
               <div className="flex justify-center">
                 <div className="rounded-[24px] border border-zinc-200 bg-white p-4 shadow-inner">
-                  <img src={qrImageUrl} alt="Bot QR" className="h-64 w-64 max-w-full rounded-xl object-contain sm:h-72 sm:w-72" />
+                  <Image src={displayQrImageUrl} alt="Bot QR" width={288} height={288} unoptimized className="h-64 w-64 max-w-full rounded-xl object-contain sm:h-72 sm:w-72" />
                 </div>
               </div>
               <div className="mt-4 text-center text-[11px] text-zinc-500">Jika QR expired, tunggu bot menghasilkan QR baru lalu scan ulang.</div>
@@ -363,7 +357,7 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
             <span className="w-3 h-3 rounded-full bg-red-500/80 inline-block" />
             <span className="w-3 h-3 rounded-full bg-amber-500/80 inline-block" />
             <span className="w-3 h-3 rounded-full bg-emerald-500/80 inline-block" />
-            <span className="ml-2 text-zinc-300 font-semibold">container-tty / root@birdserver</span>
+            <span className="ml-2 text-zinc-300 font-semibold">server-runtime / process-group</span>
           </div>
 
           <div className="flex items-center space-x-3">
@@ -384,7 +378,7 @@ export function ConsoleView({ serverId, serverStatus, onPowerAction }: ConsoleVi
 
         <form onSubmit={handleSendCommand} className="bg-zinc-900/80 border-t border-zinc-800 p-2.5 flex items-center gap-2">
           <span className="text-emerald-400 font-mono text-sm pl-2 font-bold">&gt;</span>
-          <input type="text" value={command} onChange={(e) => setCommand(e.target.value)} placeholder={serverStatus === "running" ? "Type command here..." : serverStatus === "starting" ? "Installing dependencies aggressively... console input unlocks on app start." : "Server is offline. Press START above first."} disabled={serverStatus !== "running"} className="flex-1 bg-transparent text-white font-mono text-xs focus:outline-none placeholder-zinc-600 disabled:opacity-50" />
+          <input type="text" value={command} onChange={(e) => setCommand(e.target.value)} placeholder={serverStatus === "running" ? "Type command here..." : ["creating", "starting", "installing"].includes(serverStatus) ? "Preparing dependencies... console input unlocks on app start." : "Server is offline. Press START above first."} disabled={serverStatus !== "running"} className="flex-1 bg-transparent text-white font-mono text-xs focus:outline-none placeholder-zinc-600 disabled:opacity-50" />
           <button type="submit" disabled={serverStatus !== "running" || !command.trim()} className="px-3 py-1.5 rounded-lg bg-white text-black font-bold text-xs hover:bg-zinc-200 disabled:opacity-30 transition-all flex items-center gap-1"><Send className="w-3.5 h-3.5" />Send</button>
         </form>
       </div>

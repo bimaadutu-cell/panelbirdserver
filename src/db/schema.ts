@@ -188,6 +188,25 @@ export const webhooks = pgTable("webhooks", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
+export const serverJobs = pgTable("server_jobs", {
+  id: text("id").primaryKey(),
+  serverId: text("server_id").notNull().references(() => servers.id, { onDelete: "cascade" }),
+  ownerId: text("owner_id"),
+  kind: text("kind").notNull(), // 'install' | 'extract' | 'backup' | 'restore' | 'cleanup'
+  status: text("status").notNull().default("queued"), // queued | running | succeeded | failed | cancelled
+  phase: text("phase").notNull().default("queued"),
+  progress: integer("progress").notNull().default(0),
+  pid: integer("pid"),
+  command: text("command"),
+  lastOutput: text("last_output"),
+  errorCode: text("error_code"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  startedAt: timestamp("started_at"),
+  finishedAt: timestamp("finished_at"),
+  cancelledAt: timestamp("cancelled_at"),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 export const auditLogs = pgTable("audit_logs", {
   id: text("id").primaryKey(),
   userId: text("user_id"),
